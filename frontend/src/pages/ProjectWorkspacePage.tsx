@@ -5,6 +5,8 @@ import {
   approveStageRun,
   confirmRequirements,
   exportArtifact,
+  getCodeFile,
+  getCodeTree,
   getProjectFlow,
   getProjectStats,
   getStageRunMessages,
@@ -13,11 +15,15 @@ import {
   listProjectArtifacts,
   listProviders,
   rejectStageRun,
+  runGeneratedCode,
   sendChatMessage,
   startStage,
+  testGeneratedCode,
   updateArtifact,
   type ActivityEvent,
   type Artifact,
+  type CodeRun,
+  type CodeTree,
   type Message,
   type ProjectStats,
   type ProjectFlow,
@@ -64,6 +70,11 @@ export default function ProjectWorkspacePage() {
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([])
   const [stats, setStats] = useState<ProjectStats | null>(null)
   const [traceability, setTraceability] = useState<Traceability | null>(null)
+  const [codeTree, setCodeTree] = useState<CodeTree>({ exists: false, files: [] })
+  const [selectedCodePath, setSelectedCodePath] = useState('')
+  const [codeContent, setCodeContent] = useState('')
+  const [codeOutput, setCodeOutput] = useState('')
+  const [codeRunning, setCodeRunning] = useState<'run' | 'test' | null>(null)
   const [exportingId, setExportingId] = useState<string | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
   const [selectedProviderId, setSelectedProviderId] = useState<number | null>(null)
@@ -86,18 +97,21 @@ export default function ProjectWorkspacePage() {
       return
     }
     try {
-      const [nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace] = await Promise.all([
+      const [nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace, nextCodeTree] =
+        await Promise.all([
         getProjectFlow(id),
         listProjectArtifacts(id),
         listActivityEvents(id),
         getProjectStats(id),
         getTraceability(id),
+        getCodeTree(id),
       ])
       setFlow(nextFlow)
       setArtifacts(nextArtifacts)
       setActivityEvents(nextEvents)
       setStats(nextStats)
       setTraceability(nextTrace)
+      setCodeTree(nextCodeTree)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败')
     }
@@ -263,6 +277,40 @@ export default function ProjectWorkspacePage() {
     }
   }
 
+  async function handleViewCode(path: string) {
+    const id = Number(projectId)
+    if (!Number.isFinite(id)) {
+      return
+    }
+    setSelectedCodePath(path)
+    setError('')
+    try {
+      setCodeContent(await getCodeFile(id, path))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '读取代码失败')
+    }
+  }
+
+  async function handleRunCode(kind: 'run' | 'test') {
+    const id = Number(projectId)
+    if (!Number.isFinite(id)) {
+      return
+    }
+    setCodeRunning(kind)
+    setError('')
+    try {
+      const result: CodeRun =
+        kind === 'run' ? await runGeneratedCode(id) : await testGeneratedCode(id)
+      setCodeOutput(
+        `${kind === 'run' ? '运行验证' : '测试运行'} ${result.ok ? '成功' : '失败'}\n${result.output}`,
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '执行失败')
+    } finally {
+      setCodeRunning(null)
+    }
+  }
+
   const canStartAt = (index: number) => {
     if (!flow) {
       return false
@@ -326,6 +374,69 @@ export default function ProjectWorkspacePage() {
               {Object.values(stats.entity_counts).reduce((sum, value) => sum + value, 0)}
             </div>
           </div>
+        </div>
+      )}
+
+      {flow && (
+        <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
+          <div className="flex items-center justify-between">
+            <h2 className="font-medium">生成代码</h2>
+            <div className="flex gap-2">
+              <button
+                onClick={() => void handleRunCode('run')}
+                disabled={codeRunning !== null || !codeTree.exists}
+                className="rounded-md bg-slate-900 px-3 py-1.5 text-xs text-white"
+              >
+                {codeRunning === 'run' ? '运行中...' : '运行验证'}
+              </button>
+              <button
+                onClick={() => void handleRunCode('test')}
+                disabled={codeRunning !== null || !codeTree.exists}
+                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600"
+              >
+                {codeRunning === 'test' ? '测试中...' : '运行测试'}
+              </button>
+            </div>
+          </div>
+          {!codeTree.exists ? (
+            <p className="mt-3 text-sm text-slate-500">
+              尚未生成代码文件，完成“编码骨架”阶段后自动写入项目目录。
+            </p>
+          ) : (
+            <div className="mt-3 grid grid-cols-3 gap-3">
+              <div className="max-h-96 overflow-auto rounded-md border border-slate-200">
+                {codeTree.files.map((file) => (
+                  <button
+                    key={file.path}
+                    onClick={() => void handleViewCode(file.path)}
+                    className={`block w-full px-3 py-2 text-left text-xs ${
+                      selectedCodePath === file.path
+                        ? 'bg-slate-900 text-white'
+                        : 'text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {file.path}
+                  </button>
+                ))}
+              </div>
+              <div className="col-span-2">
+                {selectedCodePath ? (
+                  <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                    {codeContent}
+                  </pre>
+                ) : (
+                  <div className="flex h-full items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
+                    选择左侧文件查看内容
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          {codeOutput && (
+            <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-slate-900 px-3 py-2 text-xs text-green-300">
+              {codeOutput}
+            </pre>
+          )}
         </div>
       )}
 

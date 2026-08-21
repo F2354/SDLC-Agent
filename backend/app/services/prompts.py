@@ -91,3 +91,57 @@ def build_stage_prompt(
         "3. 内容必须与前置产物保持一致，不能凭空发明未出现的功能。"
     )
     return system, user
+
+
+def build_code_stage_prompt(
+    stage_code: str,
+    stage_name: str,
+    project_name: str,
+    project_description: str,
+    previous_artifacts: str,
+    error_info: str = "",
+) -> tuple[str, str]:
+    if stage_code == "coding":
+        system = (
+            "你是一名开发工程师，负责根据需求与设计文档生成一个可运行的 Python FastAPI 项目。"
+            "代码必须能通过语法检查和启动验证。"
+            "只输出代码文件，不要输出解释性文字。"
+        )
+        user = (
+            f"项目名称：{project_name}\n"
+            f"项目描述：{project_description}\n"
+            f"当前阶段：{stage_name}\n\n"
+            f"前置文档：\n{previous_artifacts or '（无）'}\n\n"
+            "请生成一个完整的 FastAPI 项目，包含以下文件：\n"
+            "[FILE] requirements.txt\n"
+            "[FILE] app/main.py\n"
+            "[FILE] app/models.py\n"
+            "[FILE] README.md\n"
+            "[FILE] tests/test_app.py\n\n"
+            "要求：\n"
+            "1. 每个文件必须使用 [FILE] 路径 开头，文件内容紧跟在下一行。\n"
+            "2. app/main.py 使用 FastAPI 和 SQLite，必须暴露 /health 接口。\n"
+            "3. main.py 可以直接运行：python app/main.py。\n"
+            "4. tests/test_app.py 使用 pytest 和 TestClient 测试 /health。\n"
+            "5. requirements.txt 至少包含 fastapi、uvicorn、pytest、httpx。"
+        )
+    else:
+        system = (
+            "你是一名测试工程师，负责为已生成的 FastAPI 项目编写 pytest 测试。"
+            "只输出测试文件，不要输出解释性文字。"
+        )
+        user = (
+            f"项目名称：{project_name}\n"
+            f"项目描述：{project_description}\n\n"
+            f"前置文档与代码提示：\n{previous_artifacts or '（无）'}\n\n"
+            "请生成测试文件：\n"
+            "[FILE] tests/test_app.py\n"
+            "[FILE] tests/conftest.py\n\n"
+            "要求：\n"
+            "1. 每个文件必须使用 [FILE] 路径 开头。\n"
+            "2. 使用 pytest 和 fastapi.testclient.TestClient。\n"
+            "3. 至少覆盖 /health 接口和项目核心接口。"
+        )
+    if error_info:
+        user += f"\n\n上次验证失败信息：\n{error_info}\n请修复后完整重新输出全部文件。"
+    return system, user

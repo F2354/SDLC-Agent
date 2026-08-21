@@ -181,6 +181,22 @@ export interface ProjectStats {
   entity_counts: Record<string, number>
 }
 
+export interface CodeFile {
+  path: string
+  size: number
+}
+
+export interface CodeTree {
+  exists: boolean
+  files: CodeFile[]
+}
+
+export interface CodeRun {
+  ok: boolean
+  phase: string
+  output: string
+}
+
 export type ProviderType = 'openai_compatible' | 'ollama'
 
 export interface ProviderModel {
@@ -332,6 +348,36 @@ export function getProjectStats(projectId: number) {
 
 export function getTraceability(projectId: number) {
   return request<Traceability>(`/projects/${projectId}/traceability`)
+}
+
+export function getCodeTree(projectId: number) {
+  return request<CodeTree>(`/projects/${projectId}/code/tree`)
+}
+
+export async function getCodeFile(projectId: number, path: string) {
+  const response = await fetch(
+    `${API_BASE}/projects/${projectId}/code/file?path=${encodeURIComponent(path)}`,
+    {
+      headers: authHeaders(),
+    },
+  )
+  if (!response.ok) {
+    const body = await response.text()
+    throw new ApiError(response.status, body || `读取失败: ${response.status}`)
+  }
+  return response.text()
+}
+
+export function runGeneratedCode(projectId: number) {
+  return request<CodeRun>(`/projects/${projectId}/code/run`, {
+    method: 'POST',
+  })
+}
+
+export function testGeneratedCode(projectId: number) {
+  return request<CodeRun>(`/projects/${projectId}/code/test`, {
+    method: 'POST',
+  })
 }
 
 export async function exportArtifact(artifactId: number, format: 'docx' | 'pdf') {

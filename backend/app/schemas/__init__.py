@@ -1,6 +1,7 @@
 """Pydantic schemas package."""
 
 from app.schemas.auth import TokenResponse, UserCreate, UserLogin, UserOut
+from app.schemas.code import CodeFileOut, CodeRunOut, CodeTreeOut
 from app.schemas.analytics import (
     ProjectStatsOut,
     TraceabilityArtifactRow,
@@ -35,6 +36,9 @@ from app.schemas.stage import (
 
 __all__ = [
     "ProcessModelOut",
+    "CodeFileOut",
+    "CodeRunOut",
+    "CodeTreeOut",
     "ProjectStatsOut",
     "ActivityEventOut",
     "ArtifactOut",

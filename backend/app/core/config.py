@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     app_name: str = "SDLC Agent"
     env: str = "development"
     database_url: str = "sqlite:///./data/sdlc.db"
+    project_workspace_root: str = "./data/projects"
     secret_key: str = "dev-secret-key-change-me-please-0123456789"
     access_token_expire_minutes: int = 1440
     cors_origins: list[str] = [

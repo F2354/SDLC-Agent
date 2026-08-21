@@ -20,7 +20,8 @@ from app.models.stage_run import (
 )
 from app.schemas.stage import ArtifactOut, MessageOut, StageRunOut
 from app.services.llm_service import build_openai_client
-from app.services.prompts import build_stage_prompt
+from app.services.prompts import build_code_stage_prompt, build_stage_prompt
+from app.services.code_service import run_tests, run_verify, write_files
 
 
 REQUIREMENTS_SYSTEM_PROMPT = (
@@ -116,6 +117,121 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):
     return graph.compile()
 
 
+def _invoke_llm(
+    provider: LLMProvider,
+    system: str,
+    user: str,
+    max_tokens: int = 1500,
+) -> str:
+    client = build_openai_client(provider)
+    completion = client.chat.completions.create(
+        model=provider.default_model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.3,
+        max_tokens=max_tokens,
+    )
+    return completion.choices[0].message.content or ""
+
+
+def execute_code_stage(
+    stage: Stage,
+    project: Project,
+    run: StageRun,
+    provider: LLMProvider,
+    db: Session,
+) -> None:
+    run.status = "generating"
+    run.started_at = datetime.now()
+    db.add(
+        ActivityEvent(
+            project_id=project.id,
+            stage_run_id=run.id,
+            event_type="agent_started",
+            message=f"{stage.name}已开始生成代码文件",
+        )
+    )
+    db.commit()
+
+    previous_rows = list(
+        db.scalars(
+            select(Artifact)
+            .where(Artifact.project_id == project.id)
+            .order_by(Artifact.id)
+        )
+    )
+    previous_artifacts = "\n\n".join(
+        f"### {row.title}\n{row.content_md}" for row in previous_rows
+    )
+
+    max_attempts = 3 if stage.code == "coding" else 2
+    error_info = ""
+    content = ""
+    result = None
+    for attempt in range(1, max_attempts + 1):
+        system, user = build_code_stage_prompt(
+            stage_code=stage.code,
+            stage_name=stage.name,
+            project_name=project.name,
+            project_description=project.description,
+            previous_artifacts=previous_artifacts,
+            error_info=error_info,
+        )
+        content = _invoke_llm(
+            provider,
+            system,
+            user,
+            max_tokens=5000 if stage.code == "coding" else 2500,
+        )
+        target = "code" if stage.code == "coding" else "tests"
+        try:
+            written = write_files(project.id, content, target)
+        except ValueError as exc:
+            error_info = str(exc)
+            if attempt == max_attempts:
+                raise
+            continue
+        result = run_verify(project.id) if stage.code == "coding" else run_tests(project.id)
+        if result.ok:
+            break
+        error_info = result.output[:2000]
+
+    artifact = Artifact(
+        project_id=project.id,
+        stage_run_id=run.id,
+        type=stage.code,
+        title=f"{stage.name}与验证结果",
+        content_md=(
+            f"# {stage.name}\n\n"
+            f"{content}\n\n"
+            f"## 验证结果\n\n{result.model_dump_json(indent=2) if result else '未生成验证结果'}"
+        ),
+        status="awaiting_review",
+    )
+    db.add(artifact)
+    db.flush()
+    db.add(
+        ArtifactVersion(
+            artifact_id=artifact.id,
+            version_no=1,
+            content_md=artifact.content_md,
+        )
+    )
+    run.status = "awaiting_review"
+    run.finished_at = datetime.now()
+    db.add(
+        ActivityEvent(
+            project_id=project.id,
+            stage_run_id=run.id,
+            event_type="artifact_saved",
+            message=f"{stage.name}产物与运行验证结果已生成",
+        )
+    )
+    db.commit()
+
+
 def execute_stage_run(stage_run_id: int) -> None:
     with SessionLocal() as db:
         run = db.get(StageRun, stage_run_id)
@@ -129,6 +245,10 @@ def execute_stage_run(stage_run_id: int) -> None:
                 raise ValueError("阶段或项目不存在")
             if provider is None or not provider.enabled:
                 raise ValueError("请先配置可用的模型 Provider")
+
+            if stage.code in ("coding", "testing"):
+                execute_code_stage(stage, project, run, provider, db)
+                return
 
             run.status = "generating"
             run.started_at = datetime.now()

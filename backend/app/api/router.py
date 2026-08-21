@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     artifacts,
     auth,
+    code,
     health,
     process_models,
     projects,
@@ -13,6 +14,7 @@ from app.api.routes import (
 api_router = APIRouter(prefix="/api")
 api_router.include_router(auth.router)
 api_router.include_router(artifacts.router)
+api_router.include_router(code.router)
 api_router.include_router(providers.router)
 api_router.include_router(process_models.router)
 api_router.include_router(projects.router)
