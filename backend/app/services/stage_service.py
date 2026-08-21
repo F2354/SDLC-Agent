@@ -336,7 +336,13 @@ def execute_stage_run(stage_run_id: int) -> None:
             if provider is None or not provider.enabled:
                 raise ValueError("请先配置可用的模型 Provider")
 
-            if stage.code in ("coding", "testing"):
+            if stage.code in (
+                "coding",
+                "testing",
+                "unit-test",
+                "integration-test",
+                "system-test",
+            ):
                 execute_code_stage(stage, project, run, provider, db)
                 return
 

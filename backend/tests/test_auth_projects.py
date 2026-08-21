@@ -103,3 +103,14 @@ def test_create_project_and_flow(client):
         json={"comment": ""},
     )
     assert approve.status_code == 400
+
+
+def test_process_models_include_v_model(client):
+    response = client.get("/api/process-models")
+    assert response.status_code == 200
+    models = response.json()
+    codes = [model["code"] for model in models]
+    assert "waterfall" in codes
+    assert "v-model" in codes
+    v_model = next(model for model in models if model["code"] == "v-model")
+    assert len(v_model["stages"]) == 7

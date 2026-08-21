@@ -441,7 +441,7 @@ export default function ProjectWorkspacePage() {
       )}
 
       {flow && (
-        <div className="mt-6 grid grid-cols-5 gap-3">
+        <div className="mt-6 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(170px,1fr))]">
           {flow.stages.map(({ stage, status }, index) => (
             <div key={stage.code} className={cardClass(status)}>
               <div className="mx-auto mb-2 h-8 w-8 rounded-full bg-slate-900 text-center leading-8 text-white">

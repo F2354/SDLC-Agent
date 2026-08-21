@@ -131,23 +131,43 @@ def build_code_stage_prompt(
             "10. app/main.py 必须使用 if __name__ == \"__main__\" 才启动 uvicorn。"
         )
     else:
-        system = (
-            "你是一名测试工程师，负责为已生成的 FastAPI 项目编写 pytest 测试。"
-            "只输出测试文件，不要输出解释性文字。"
-        )
+        if stage_code == "unit-test":
+            system = (
+                "你是一名测试工程师，负责为已生成的 FastAPI 项目编写核心单元测试。"
+                "只输出测试文件，不要输出解释性文字。"
+            )
+            file_hint = "[FILE] tests/test_core.py"
+        elif stage_code == "integration-test":
+            system = (
+                "你是一名测试工程师，负责编写集成测试，验证模块间接口协同。"
+                "只输出测试文件，不要输出解释性文字。"
+            )
+            file_hint = "[FILE] tests/test_integration.py"
+        elif stage_code == "system-test":
+            system = (
+                "你是一名测试工程师，负责编写系统端到端测试，按需求验证完整业务链路。"
+                "只输出测试文件，不要输出解释性文字。"
+            )
+            file_hint = "[FILE] tests/test_system.py"
+        else:
+            system = (
+                "你是一名测试工程师，负责为已生成的 FastAPI 项目编写 pytest 测试。"
+                "只输出测试文件，不要输出解释性文字。"
+            )
+            file_hint = "[FILE] tests/test_app.py"
         user = (
             f"项目名称：{project_name}\n"
             f"项目描述：{project_description}\n\n"
             f"前置文档与代码提示：\n{previous_artifacts or '（无）'}\n\n"
             "请生成测试文件：\n"
-            "[FILE] tests/test_app.py\n"
+            f"{file_hint}\n"
             "[FILE] tests/conftest.py\n\n"
             "要求：\n"
             "1. 每个文件必须使用 [FILE] 路径 开头。\n"
             "2. 使用 pytest 和 fastapi.testclient.TestClient。\n"
             "3. 至少覆盖 /health 接口和项目核心接口。\n"
             "4. 禁止使用 Markdown 代码围栏，文件内容直接写在 [FILE] 行之后。\n"
-            "5. 测试路径必须是 tests/test_app.py 和 tests/conftest.py，不能嵌套成 tests/tests/。\n"
+            "5. 测试路径不能嵌套成 tests/tests/。\n"
             "6. 不要生成 requirements.txt 版本号，也不要修改代码目录中的源码文件。"
         )
     if error_info:
