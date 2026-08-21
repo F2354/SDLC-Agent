@@ -123,7 +123,12 @@ def build_code_stage_prompt(
             "2. app/main.py 使用 FastAPI 和 SQLite，必须暴露 /health 接口。\n"
             "3. main.py 可以直接运行：python app/main.py。\n"
             "4. tests/test_app.py 使用 pytest 和 TestClient 测试 /health。\n"
-            "5. requirements.txt 至少包含 fastapi、uvicorn、pytest、httpx。"
+            "5. requirements.txt 至少包含 fastapi、uvicorn、pytest、httpx。\n"
+            "6. 禁止使用 Markdown 代码围栏，文件内容直接写在 [FILE] 行之后，不要出现 ```。\n"
+            "7. 禁止使用 passlib，密码处理使用 hashlib 或 PyJWT。\n"
+            "8. requirements.txt 只写包名，不写任何版本号。\n"
+            "9. 测试文件路径必须是 tests/test_app.py，不能嵌套成 tests/tests/test_app.py。\n"
+            "10. app/main.py 必须使用 if __name__ == \"__main__\" 才启动 uvicorn。"
         )
     else:
         system = (
@@ -140,7 +145,10 @@ def build_code_stage_prompt(
             "要求：\n"
             "1. 每个文件必须使用 [FILE] 路径 开头。\n"
             "2. 使用 pytest 和 fastapi.testclient.TestClient。\n"
-            "3. 至少覆盖 /health 接口和项目核心接口。"
+            "3. 至少覆盖 /health 接口和项目核心接口。\n"
+            "4. 禁止使用 Markdown 代码围栏，文件内容直接写在 [FILE] 行之后。\n"
+            "5. 测试路径必须是 tests/test_app.py 和 tests/conftest.py，不能嵌套成 tests/tests/。\n"
+            "6. 不要生成 requirements.txt 版本号，也不要修改代码目录中的源码文件。"
         )
     if error_info:
         user += f"\n\n上次验证失败信息：\n{error_info}\n请修复后完整重新输出全部文件。"
