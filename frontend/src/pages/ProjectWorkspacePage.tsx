@@ -6,13 +6,18 @@ import {
   confirmRequirements,
   getProjectFlow,
   getStageRunMessages,
+  listActivityEvents,
   listProjectArtifacts,
+  listProviders,
   rejectStageRun,
   sendChatMessage,
   startStage,
+  updateArtifact,
+  type ActivityEvent,
   type Artifact,
   type Message,
   type ProjectFlow,
+  type Provider,
 } from '../lib/api'
 
 const statusLabels: Record<string, string> = {
@@ -26,11 +31,37 @@ const statusLabels: Record<string, string> = {
   failed: '失败',
 }
 
+function cardClass(status: string) {
+  const base = 'rounded-lg border bg-white p-4 text-center text-sm transition-all duration-300'
+  if (status === 'approved' || status === 'completed') {
+    return `${base} border-green-300 bg-green-50`
+  }
+  if (status === 'awaiting_review') {
+    return `${base} border-amber-300 bg-amber-50`
+  }
+  if (status === 'collecting' || status === 'generating') {
+    return `${base} animate-pulse border-blue-300 bg-blue-50`
+  }
+  if (status === 'rejected' || status === 'failed') {
+    return `${base} border-red-200 bg-red-50`
+  }
+  return `${base} border-slate-200`
+}
+
+function renderTime(value: string) {
+  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+}
+
 export default function ProjectWorkspacePage() {
   const { projectId } = useParams()
   const [flow, setFlow] = useState<ProjectFlow | null>(null)
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
+  const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([])
+  const [providers, setProviders] = useState<Provider[]>([])
+  const [selectedProviderId, setSelectedProviderId] = useState<number | null>(null)
   const [selectedArtifactId, setSelectedArtifactId] = useState<number | null>(null)
+  const [editingArtifactId, setEditingArtifactId] = useState<number | null>(null)
+  const [editContent, setEditContent] = useState('')
   const [starting, setStarting] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [messages, setMessages] = useState<Message[]>([])
@@ -47,12 +78,14 @@ export default function ProjectWorkspacePage() {
       return
     }
     try {
-      const [nextFlow, nextArtifacts] = await Promise.all([
+      const [nextFlow, nextArtifacts, nextEvents] = await Promise.all([
         getProjectFlow(id),
         listProjectArtifacts(id),
+        listActivityEvents(id),
       ])
       setFlow(nextFlow)
       setArtifacts(nextArtifacts)
+      setActivityEvents(nextEvents)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败')
     }
@@ -63,6 +96,15 @@ export default function ProjectWorkspacePage() {
     const timer = window.setInterval(() => void load(), 3000)
     return () => window.clearInterval(timer)
   }, [projectId])
+
+  useEffect(() => {
+    listProviders()
+      .then((list) => {
+        setProviders(list)
+        setSelectedProviderId((prev) => prev ?? list[0]?.id ?? null)
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : '加载模型服务失败'))
+  }, [])
 
   const collectingRunId =
     flow?.stages.find(({ status, stage_run_id }) => status === 'collecting' && !!stage_run_id)
@@ -89,7 +131,10 @@ export default function ProjectWorkspacePage() {
     setStarting(stageCode)
     setError('')
     try {
-      await startStage(id, stageCode, { mode })
+      await startStage(id, stageCode, {
+        mode,
+        provider_id: selectedProviderId,
+      })
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : '启动阶段失败')
@@ -164,6 +209,27 @@ export default function ProjectWorkspacePage() {
     }
   }
 
+  async function handleStartEdit(artifact: Artifact) {
+    setSelectedArtifactId(artifact.id)
+    setEditContent(artifact.content_md)
+    setEditingArtifactId(artifact.id)
+  }
+
+  async function handleSaveArtifact(artifact: Artifact) {
+    if (editingArtifactId !== artifact.id) {
+      return
+    }
+    setError('')
+    try {
+      const updated = await updateArtifact(artifact.id, editContent)
+      setArtifacts((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
+      setEditingArtifactId(null)
+      setSelectedArtifactId(updated.id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存修订失败')
+    }
+  }
+
   const canStartAt = (index: number) => {
     if (!flow) {
       return false
@@ -176,20 +242,39 @@ export default function ProjectWorkspacePage() {
 
   return (
     <div>
-      <h1 className="text-lg font-semibold">项目 #{projectId}</h1>
-      <p className="text-sm text-slate-500">
-        {flow ? `${flow.process_model.name}工作台` : '加载中...'}
-      </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-lg font-semibold">项目 #{projectId}</h1>
+          <p className="text-sm text-slate-500">
+            {flow ? `${flow.process_model.name}工作台` : '加载中...'}
+          </p>
+        </div>
+        {providers.length > 0 && (
+          <label className="text-sm text-slate-500">
+            模型服务
+            <select
+              value={selectedProviderId ?? ''}
+              onChange={(event) =>
+                setSelectedProviderId(event.target.value ? Number(event.target.value) : null)
+              }
+              className="ml-2 rounded-md border border-slate-300 px-3 py-1.5"
+            >
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name} · {provider.default_model || '未设默认模型'}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
 
       {error && <div className="mt-4 text-sm text-red-600">{error}</div>}
 
       {flow && (
         <div className="mt-6 grid grid-cols-5 gap-3">
           {flow.stages.map(({ stage, status }, index) => (
-            <div
-              key={stage.code}
-              className="rounded-lg border border-slate-200 bg-white p-4 text-center text-sm"
-            >
+            <div key={stage.code} className={cardClass(status)}>
               <div className="mx-auto mb-2 h-8 w-8 rounded-full bg-slate-900 text-center leading-8 text-white">
                 {index + 1}
               </div>
@@ -334,16 +419,66 @@ export default function ProjectWorkspacePage() {
                     v{artifact.current_version} · {statusLabels[artifact.status] ?? artifact.status}
                   </span>
                 </button>
-                {selectedArtifactId === artifact.id && (
-                  <pre className="max-h-96 overflow-auto whitespace-pre-wrap border-t border-slate-200 px-4 py-3 text-sm">
-                    {artifact.content_md}
-                  </pre>
+                {selectedArtifactId === artifact.id && editingArtifactId !== artifact.id && (
+                  <div className="border-t border-slate-200">
+                    <pre className="max-h-96 overflow-auto whitespace-pre-wrap px-4 py-3 text-sm">
+                      {artifact.content_md}
+                    </pre>
+                    <div className="border-t border-slate-100 px-4 py-2">
+                      <button
+                        onClick={() => void handleStartEdit(artifact)}
+                        className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600"
+                      >
+                        编辑文档
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {selectedArtifactId === artifact.id && editingArtifactId === artifact.id && (
+                  <div className="border-t border-slate-200 p-4">
+                    <textarea
+                      value={editContent}
+                      onChange={(event) => setEditContent(event.target.value)}
+                      className="min-h-72 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    />
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        onClick={() => void handleSaveArtifact(artifact)}
+                        className="rounded-md bg-slate-900 px-4 py-2 text-sm text-white"
+                      >
+                        保存新版本
+                      </button>
+                      <button
+                        onClick={() => setEditingArtifactId(null)}
+                        className="rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-600"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             ))}
           </div>
         </div>
       )}
+
+      <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
+        <h2 className="font-medium">Agent 活动日志</h2>
+        <ul className="mt-3 max-h-72 space-y-2 overflow-auto text-sm">
+          {activityEvents.length === 0 && (
+            <li className="text-slate-500">暂无活动记录。</li>
+          )}
+          {activityEvents.map((event) => (
+            <li key={event.id} className="flex items-start gap-2 text-slate-600">
+              <span className="shrink-0 text-xs text-slate-400">
+                {renderTime(event.created_at)}
+              </span>
+              <span>{event.message}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   )
 }

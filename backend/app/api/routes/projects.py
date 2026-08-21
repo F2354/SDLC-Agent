@@ -9,7 +9,7 @@ from app.db.session import get_db
 from app.models.llm_provider import LLMProvider
 from app.models.process_model import ProcessModel, Stage
 from app.models.project import Project
-from app.models.stage_run import Artifact, Message, StageRun
+from app.models.stage_run import ActivityEvent, Artifact, Message, StageRun
 from app.models.user import User
 from app.schemas.project import (
     ProjectCreate,
@@ -19,7 +19,12 @@ from app.schemas.project import (
     ProjectUpdate,
     StageOut,
 )
-from app.schemas.stage import ArtifactOut, StageRunOut, StageStartRequest
+from app.schemas.stage import (
+    ActivityEventOut,
+    ArtifactOut,
+    StageRunOut,
+    StageStartRequest,
+)
 from app.services.stage_service import (
     INITIAL_INTERVIEW_MESSAGE,
     serialize_stage_run,
@@ -218,6 +223,23 @@ def list_project_artifacts(
             select(Artifact)
             .where(Artifact.project_id == project.id)
             .order_by(Artifact.id.desc())
+        )
+    )
+
+
+@router.get("/{project_id}/activity-events", response_model=list[ActivityEventOut])
+def list_activity_events(
+    project_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(project_id, user, db)
+    return list(
+        db.scalars(
+            select(ActivityEvent)
+            .where(ActivityEvent.project_id == project.id)
+            .order_by(ActivityEvent.id.desc())
+            .limit(100)
         )
     )
 

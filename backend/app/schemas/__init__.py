@@ -18,7 +18,9 @@ from app.schemas.project import (
     StageOut,
 )
 from app.schemas.stage import (
+    ActivityEventOut,
     ArtifactOut,
+    ArtifactUpdate,
     ChatRequest,
     MessageOut,
     ReviewRequest,
@@ -28,7 +30,9 @@ from app.schemas.stage import (
 
 __all__ = [
     "ProcessModelOut",
+    "ActivityEventOut",
     "ArtifactOut",
+    "ArtifactUpdate",
     "ChatRequest",
     "MessageOut",
     "ProviderCreate",

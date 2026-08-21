@@ -9,6 +9,7 @@
 - M2：LLM Provider 管理，支持 OpenAI 兼容云服务和 Ollama
 - M3：Agent 执行引擎，阶段运行、LangGraph 编排、产物保存
 - M4：需求访谈对话、确认生成、评审通过/打回闭环
+- M5：前端工作台完善，流程状态动效、活动日志、文档编辑、Provider 选择
 - 后端 FastAPI 服务，启动时自动建表并填充瀑布模型
 - 前端 React + Vite + Tailwind 路由骨架
 

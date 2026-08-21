@@ -58,3 +58,18 @@ class ChatRequest(BaseModel):
 
 class ReviewRequest(BaseModel):
     comment: str = Field(default="", max_length=2000)
+
+
+class ActivityEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    stage_run_id: int | None = None
+    event_type: str
+    message: str
+    created_at: datetime
+
+
+class ArtifactUpdate(BaseModel):
+    content_md: str = Field(min_length=1, max_length=20000)

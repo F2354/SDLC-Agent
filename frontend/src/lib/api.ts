@@ -144,6 +144,15 @@ export interface ReviewRequest {
   comment?: string
 }
 
+export interface ActivityEvent {
+  id: number
+  project_id: number
+  stage_run_id: number | null
+  event_type: string
+  message: string
+  created_at: string
+}
+
 export type ProviderType = 'openai_compatible' | 'ollama'
 
 export interface ProviderModel {
@@ -275,6 +284,17 @@ export function rejectStageRun(runId: number, comment = '') {
   return request<StageRun>(`/stage-runs/${runId}/reject`, {
     method: 'POST',
     body: JSON.stringify({ comment }),
+  })
+}
+
+export function listActivityEvents(projectId: number) {
+  return request<ActivityEvent[]>(`/projects/${projectId}/activity-events`)
+}
+
+export function updateArtifact(artifactId: number, contentMd: string) {
+  return request<Artifact>(`/artifacts/${artifactId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ content_md: contentMd }),
   })
 }
 
