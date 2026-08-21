@@ -4,8 +4,11 @@ import { useParams } from 'react-router-dom'
 import {
   approveStageRun,
   confirmRequirements,
+  exportArtifact,
   getProjectFlow,
+  getProjectStats,
   getStageRunMessages,
+  getTraceability,
   listActivityEvents,
   listProjectArtifacts,
   listProviders,
@@ -16,8 +19,10 @@ import {
   type ActivityEvent,
   type Artifact,
   type Message,
+  type ProjectStats,
   type ProjectFlow,
   type Provider,
+  type Traceability,
 } from '../lib/api'
 
 const statusLabels: Record<string, string> = {
@@ -57,6 +62,9 @@ export default function ProjectWorkspacePage() {
   const [flow, setFlow] = useState<ProjectFlow | null>(null)
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([])
+  const [stats, setStats] = useState<ProjectStats | null>(null)
+  const [traceability, setTraceability] = useState<Traceability | null>(null)
+  const [exportingId, setExportingId] = useState<string | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
   const [selectedProviderId, setSelectedProviderId] = useState<number | null>(null)
   const [selectedArtifactId, setSelectedArtifactId] = useState<number | null>(null)
@@ -78,14 +86,18 @@ export default function ProjectWorkspacePage() {
       return
     }
     try {
-      const [nextFlow, nextArtifacts, nextEvents] = await Promise.all([
+      const [nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace] = await Promise.all([
         getProjectFlow(id),
         listProjectArtifacts(id),
         listActivityEvents(id),
+        getProjectStats(id),
+        getTraceability(id),
       ])
       setFlow(nextFlow)
       setArtifacts(nextArtifacts)
       setActivityEvents(nextEvents)
+      setStats(nextStats)
+      setTraceability(nextTrace)
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败')
     }
@@ -230,6 +242,27 @@ export default function ProjectWorkspacePage() {
     }
   }
 
+  async function handleExport(artifact: Artifact, format: 'docx' | 'pdf') {
+    const key = `${artifact.id}-${format}`
+    setExportingId(key)
+    setError('')
+    try {
+      const blob = await exportArtifact(artifact.id, format)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `artifact-${artifact.id}.${format}`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '导出失败')
+    } finally {
+      setExportingId(null)
+    }
+  }
+
   const canStartAt = (index: number) => {
     if (!flow) {
       return false
@@ -270,6 +303,31 @@ export default function ProjectWorkspacePage() {
       </div>
 
       {error && <div className="mt-4 text-sm text-red-600">{error}</div>}
+
+      {stats && (
+        <div className="mt-6 grid grid-cols-4 gap-3">
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">产物数量</div>
+            <div className="mt-1 text-lg font-semibold">{stats.artifact_count}</div>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">文档总字符</div>
+            <div className="mt-1 text-lg font-semibold">{stats.total_chars}</div>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">已执行阶段</div>
+            <div className="mt-1 text-lg font-semibold">
+              {Object.values(stats.stage_counts).reduce((sum, value) => sum + value, 0)}
+            </div>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-white p-4">
+            <div className="text-xs text-slate-500">追溯条目</div>
+            <div className="mt-1 text-lg font-semibold">
+              {Object.values(stats.entity_counts).reduce((sum, value) => sum + value, 0)}
+            </div>
+          </div>
+        </div>
+      )}
 
       {flow && (
         <div className="mt-6 grid grid-cols-5 gap-3">
@@ -426,6 +484,20 @@ export default function ProjectWorkspacePage() {
                     </pre>
                     <div className="border-t border-slate-100 px-4 py-2">
                       <button
+                        onClick={() => void handleExport(artifact, 'docx')}
+                        disabled={exportingId === `${artifact.id}-docx`}
+                        className="mr-2 rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600"
+                      >
+                        {exportingId === `${artifact.id}-docx` ? '导出中...' : '导出 Word'}
+                      </button>
+                      <button
+                        onClick={() => void handleExport(artifact, 'pdf')}
+                        disabled={exportingId === `${artifact.id}-pdf`}
+                        className="mr-2 rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600"
+                      >
+                        {exportingId === `${artifact.id}-pdf` ? '导出中...' : '导出 PDF'}
+                      </button>
+                      <button
                         onClick={() => void handleStartEdit(artifact)}
                         className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600"
                       >
@@ -460,6 +532,49 @@ export default function ProjectWorkspacePage() {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {traceability && (
+        <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="font-medium">追溯矩阵</h2>
+          {traceability.warnings.length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm text-amber-700">
+              {traceability.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          )}
+          {traceability.rows.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">暂无产物可追溯。</p>
+          ) : (
+            <div className="mt-3 overflow-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-xs text-slate-400">
+                    <th className="py-2 pr-4">产物</th>
+                    <th className="py-2 pr-4">阶段</th>
+                    <th className="py-2 pr-4">RQ</th>
+                    <th className="py-2 pr-4">UC</th>
+                    <th className="py-2 pr-4">MOD</th>
+                    <th className="py-2">TC</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {traceability.rows.map((row) => (
+                    <tr key={row.artifact_id} className="border-b border-slate-100">
+                      <td className="py-2 pr-4">{row.title}</td>
+                      <td className="py-2 pr-4">{row.stage_code}</td>
+                      <td className="py-2 pr-4">{row.entities.RQ.length}</td>
+                      <td className="py-2 pr-4">{row.entities.UC.length}</td>
+                      <td className="py-2 pr-4">{row.entities.MOD.length}</td>
+                      <td className="py-2">{row.entities.TC.length}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

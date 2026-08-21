@@ -62,8 +62,37 @@ def test_artifact_edit_and_activity(client):
     updated = client.patch(
         f"/api/artifacts/{artifact_id}",
         headers=headers,
-        json={"content_md": "v2 修订内容"},
+        json={
+            "content_md": (
+                "v2 修订内容\n"
+                "### 需求条目 RQ-001\n"
+                "### 用例 UC-001\n"
+                "### 模块 MOD-001\n"
+                "### 测试用例 TC-001"
+            )
+        },
     )
     assert updated.status_code == 200
     assert updated.json()["current_version"] == 2
-    assert updated.json()["content_md"] == "v2 修订内容"
+    assert "RQ-001" in updated.json()["content_md"]
+
+    trace = client.get(f"/api/projects/{project_id}/traceability", headers=headers)
+    assert trace.status_code == 200
+    assert trace.json()["entity_counts"]["RQ"] >= 1
+    assert trace.json()["entity_counts"]["TC"] >= 1
+
+    stats = client.get(f"/api/projects/{project_id}/stats", headers=headers)
+    assert stats.status_code == 200
+    assert stats.json()["artifact_count"] == 1
+    assert stats.json()["total_chars"] > 10
+
+    docx = client.get(f"/api/artifacts/{artifact_id}/export", headers=headers)
+    assert docx.status_code == 200
+    assert "wordprocessingml" in docx.headers["content-type"]
+
+    pdf = client.get(
+        f"/api/artifacts/{artifact_id}/export?format=pdf",
+        headers=headers,
+    )
+    assert pdf.status_code == 200
+    assert "application/pdf" in pdf.headers["content-type"]

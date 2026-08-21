@@ -153,6 +153,34 @@ export interface ActivityEvent {
   created_at: string
 }
 
+export interface EntityGroup {
+  RQ: string[]
+  UC: string[]
+  MOD: string[]
+  TC: string[]
+}
+
+export interface TraceabilityRow {
+  artifact_id: number
+  title: string
+  stage_code: string
+  entities: EntityGroup
+}
+
+export interface Traceability {
+  rows: TraceabilityRow[]
+  entity_counts: Record<string, number>
+  warnings: string[]
+}
+
+export interface ProjectStats {
+  project_id: number
+  stage_counts: Record<string, number>
+  artifact_count: number
+  total_chars: number
+  entity_counts: Record<string, number>
+}
+
 export type ProviderType = 'openai_compatible' | 'ollama'
 
 export interface ProviderModel {
@@ -296,6 +324,28 @@ export function updateArtifact(artifactId: number, contentMd: string) {
     method: 'PATCH',
     body: JSON.stringify({ content_md: contentMd }),
   })
+}
+
+export function getProjectStats(projectId: number) {
+  return request<ProjectStats>(`/projects/${projectId}/stats`)
+}
+
+export function getTraceability(projectId: number) {
+  return request<Traceability>(`/projects/${projectId}/traceability`)
+}
+
+export async function exportArtifact(artifactId: number, format: 'docx' | 'pdf') {
+  const response = await fetch(
+    `${API_BASE}/artifacts/${artifactId}/export?format=${format}`,
+    {
+      headers: authHeaders(),
+    },
+  )
+  if (!response.ok) {
+    const body = await response.text()
+    throw new ApiError(response.status, body || `导出失败: ${response.status}`)
+  }
+  return response.blob()
 }
 
 export function listProviders() {

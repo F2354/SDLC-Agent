@@ -25,11 +25,13 @@ from app.schemas.stage import (
     StageRunOut,
     StageStartRequest,
 )
+from app.schemas.analytics import ProjectStatsOut, TraceabilityOut
 from app.services.stage_service import (
     INITIAL_INTERVIEW_MESSAGE,
     serialize_stage_run,
     start_stage_run_async,
 )
+from app.services.traceability import compute_traceability
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -241,6 +243,46 @@ def list_activity_events(
             .order_by(ActivityEvent.id.desc())
             .limit(100)
         )
+    )
+
+
+@router.get("/{project_id}/traceability", response_model=TraceabilityOut)
+def project_traceability(
+    project_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(project_id, user, db)
+    return compute_traceability(db, project.id)
+
+
+@router.get("/{project_id}/stats", response_model=ProjectStatsOut)
+def project_stats(
+    project_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = get_owned_project(project_id, user, db)
+    runs = list(
+        db.scalars(
+            select(StageRun).where(StageRun.project_id == project.id)
+        )
+    )
+    stage_counts: dict[str, int] = {}
+    for run in runs:
+        stage_counts[run.status] = stage_counts.get(run.status, 0) + 1
+    artifacts = list(
+        db.scalars(
+            select(Artifact).where(Artifact.project_id == project.id)
+        )
+    )
+    traceability = compute_traceability(db, project.id)
+    return ProjectStatsOut(
+        project_id=project.id,
+        stage_counts=stage_counts,
+        artifact_count=len(artifacts),
+        total_chars=sum(len(artifact.content_md) for artifact in artifacts),
+        entity_counts=traceability.entity_counts,
     )
 
 
