@@ -18,6 +18,18 @@ def _target_dir(project_id: int, target: Literal["code", "tests"]) -> Path:
     return root / ("code" if target == "code" else "tests")
 
 
+def code_root(project_id: int) -> Path:
+    return _target_dir(project_id, "code")
+
+
+def tests_root(project_id: int) -> Path:
+    return _target_dir(project_id, "tests")
+
+
+def project_python(project_id: int) -> Path:
+    return _ensure_project_venv(project_id)
+
+
 def _project_venv_python(project_id: int) -> Path:
     root = _project_root(project_id)
     return root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -142,6 +154,31 @@ def read_code_file(project_id: int, relative_path: str) -> str:
     if not path.is_file():
         raise FileNotFoundError(relative_path)
     return path.read_text(encoding="utf-8")
+
+
+def write_code_file(project_id: int, relative_path: str, content: str) -> str:
+    base = _target_dir(project_id, "code")
+    path = _safe_path(base, relative_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return relative_path
+
+
+def edit_code_file(
+    project_id: int,
+    relative_path: str,
+    old_string: str,
+    new_string: str,
+) -> str:
+    base = _target_dir(project_id, "code")
+    path = _safe_path(base, relative_path)
+    if not path.is_file():
+        raise FileNotFoundError(relative_path)
+    content = path.read_text(encoding="utf-8")
+    if old_string not in content:
+        raise ValueError("未在文件中找到要替换的内容")
+    path.write_text(content.replace(old_string, new_string, 1), encoding="utf-8")
+    return relative_path
 
 
 def _decode_output(value: bytes | str | None) -> str:

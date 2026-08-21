@@ -21,7 +21,13 @@ from app.models.stage_run import (
 from app.schemas.stage import ArtifactOut, MessageOut, StageRunOut
 from app.services.llm_service import build_openai_client
 from app.services.prompts import build_code_stage_prompt, build_stage_prompt
-from app.services.code_service import run_tests, run_verify, write_files
+from app.services.code_service import (
+    list_code_files,
+    run_tests,
+    run_verify,
+    write_files,
+)
+from app.services.coding_agent import run_coding_harness
 
 
 REQUIREMENTS_SYSTEM_PROMPT = (
@@ -143,6 +149,10 @@ def execute_code_stage(
     provider: LLMProvider,
     db: Session,
 ) -> None:
+    if stage.code == "coding":
+        execute_coding_harness_stage(stage, project, run, provider, db)
+        return
+
     run.status = "generating"
     run.started_at = datetime.now()
     db.add(
@@ -227,6 +237,86 @@ def execute_code_stage(
             stage_run_id=run.id,
             event_type="artifact_saved",
             message=f"{stage.name}产物与运行验证结果已生成",
+        )
+    )
+    db.commit()
+
+
+def execute_coding_harness_stage(
+    stage: Stage,
+    project: Project,
+    run: StageRun,
+    provider: LLMProvider,
+    db: Session,
+) -> None:
+    run.status = "generating"
+    run.started_at = datetime.now()
+    db.add(
+        ActivityEvent(
+            project_id=project.id,
+            stage_run_id=run.id,
+            event_type="agent_started",
+            message=f"{stage.name}已开始工具化编码",
+        )
+    )
+    db.commit()
+
+    previous_rows = list(
+        db.scalars(
+            select(Artifact)
+            .where(Artifact.project_id == project.id)
+            .order_by(Artifact.id)
+        )
+    )
+    previous_artifacts = "\n\n".join(
+        f"### {row.title}\n{row.content_md}" for row in previous_rows
+    )
+
+    result = run_coding_harness(
+        project_id=project.id,
+        provider=provider,
+        project_name=project.name,
+        project_description=project.description,
+        previous_artifacts=previous_artifacts,
+        max_turns=8,
+    )
+    tree = list_code_files(project.id)
+    files_md = "\n".join(f"- {item.path}" for item in tree.files)
+    verify_md = result.verify.output if result.verify else "无运行结果"
+    tests_md = result.tests.output if result.tests else "无测试结果"
+    content_md = (
+        f"# 编码产物\n\n"
+        f"生成文件：\n{files_md or '（无）'}\n\n"
+        f"## 运行验证\n\n{verify_md}\n\n"
+        f"## 测试结果\n\n{tests_md}\n\n"
+        f"最终状态：{'通过' if result.ok else '未完全通过'}，共 {result.turn_count} 轮工具调用。"
+    )
+
+    artifact = Artifact(
+        project_id=project.id,
+        stage_run_id=run.id,
+        type=stage.code,
+        title=f"{stage.name}与验证结果",
+        content_md=content_md,
+        status="awaiting_review",
+    )
+    db.add(artifact)
+    db.flush()
+    db.add(
+        ArtifactVersion(
+            artifact_id=artifact.id,
+            version_no=1,
+            content_md=content_md,
+        )
+    )
+    run.status = "awaiting_review"
+    run.finished_at = datetime.now()
+    db.add(
+        ActivityEvent(
+            project_id=project.id,
+            stage_run_id=run.id,
+            event_type="artifact_saved",
+            message=f"{stage.name}工具化编码与验证结果已生成",
         )
     )
     db.commit()
