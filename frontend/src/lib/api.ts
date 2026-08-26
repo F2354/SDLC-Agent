@@ -9,16 +9,10 @@ export class ApiError extends Error {
   }
 }
 
-function authHeaders(): HeadersInit {
-  const token = localStorage.getItem('sdlc_token')
-  return token ? { Authorization: `Bearer ${token}` } : {}
-}
-
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
       'Content-Type': 'application/json',
-      ...authHeaders(),
       ...(options.headers ?? {}),
     },
     ...options,
@@ -45,18 +39,6 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   return response.json() as Promise<T>
 }
 
-export interface User {
-  id: number
-  username: string
-  display_name: string
-}
-
-export interface TokenResponse {
-  access_token: string
-  token_type: string
-  user: User
-}
-
 export interface Stage {
   id: number
   seq: number
@@ -78,6 +60,7 @@ export interface Project {
   id: number
   name: string
   description: string
+  folder: string | null
   status: string
   process_model?: ProcessModel
   owner_id: number
@@ -235,29 +218,6 @@ export interface ProviderTestResult {
   models: string[]
 }
 
-export interface LoginPayload {
-  username: string
-  password: string
-}
-
-export interface RegisterPayload extends LoginPayload {
-  display_name?: string
-}
-
-export function login(payload: LoginPayload) {
-  return request<TokenResponse>('/auth/login', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function register(payload: RegisterPayload) {
-  return request<TokenResponse>('/auth/register', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
 export function listProcessModels() {
   return request<ProcessModel[]>('/process-models')
 }
@@ -270,11 +230,27 @@ export function createProject(payload: {
   name: string
   description?: string
   process_model_code: string
+  folder?: string | null
 }) {
   return request<Project>('/projects', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export interface FsEntry {
+  name: string
+  path: string
+}
+
+export interface FsBrowse {
+  path: string
+  parent: string | null
+  entries: FsEntry[]
+}
+
+export function browseFilesystem(path = '') {
+  return request<FsBrowse>(`/filesystem?path=${encodeURIComponent(path)}`)
 }
 
 export function getProjectFlow(projectId: number) {
@@ -357,9 +333,6 @@ export function getCodeTree(projectId: number) {
 export async function getCodeFile(projectId: number, path: string) {
   const response = await fetch(
     `${API_BASE}/projects/${projectId}/code/file?path=${encodeURIComponent(path)}`,
-    {
-      headers: authHeaders(),
-    },
   )
   if (!response.ok) {
     const body = await response.text()
@@ -383,9 +356,6 @@ export function testGeneratedCode(projectId: number) {
 export async function exportArtifact(artifactId: number, format: 'docx' | 'pdf') {
   const response = await fetch(
     `${API_BASE}/artifacts/${artifactId}/export?format=${format}`,
-    {
-      headers: authHeaders(),
-    },
   )
   if (!response.ok) {
     const body = await response.text()

@@ -6,11 +6,17 @@ from pathlib import Path
 from typing import Literal
 
 from app.core.config import settings
+from app.db.session import SessionLocal
+from app.models.project import Project
 from app.schemas.code import CodeFileOut, CodeRunOut, CodeTreeOut
 
 
 def _project_root(project_id: int) -> Path:
-    return (Path(settings.project_workspace_root).resolve() / str(project_id))
+    with SessionLocal() as db:
+        project = db.get(Project, project_id)
+    if project is not None and project.folder:
+        return Path(project.folder).resolve()
+    return Path(settings.project_workspace_root).resolve() / str(project_id)
 
 
 def _target_dir(project_id: int, target: Literal["code", "tests"]) -> Path:

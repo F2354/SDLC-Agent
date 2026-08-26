@@ -1,6 +1,4 @@
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
-
-import { useAuthStore } from '../store/auth'
+import { Link, NavLink, Outlet } from 'react-router-dom'
 
 const navItems = [
   { to: '/projects', label: '项目' },
@@ -8,14 +6,6 @@ const navItems = [
 ]
 
 export default function AppShell() {
-  const logout = useAuthStore((state) => state.logout)
-  const navigate = useNavigate()
-
-  function handleLogout() {
-    logout()
-    navigate('/login')
-  }
-
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-900">
       <aside className="w-56 shrink-0 border-r border-slate-200 bg-white px-4 py-5">
@@ -41,12 +31,7 @@ export default function AppShell() {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-6">
           <div className="text-sm text-slate-500">软件生命周期智能协作平台</div>
-          <button
-            onClick={handleLogout}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
-          >
-            退出登录
-          </button>
+          <div className="text-xs text-slate-400">本地模式</div>
         </header>
         <main className="flex-1 overflow-auto p-6">
           <Outlet />

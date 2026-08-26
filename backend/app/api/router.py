@@ -4,6 +4,7 @@ from app.api.routes import (
     artifacts,
     auth,
     code,
+    filesystem,
     health,
     process_models,
     projects,
@@ -15,6 +16,7 @@ api_router = APIRouter(prefix="/api")
 api_router.include_router(auth.router)
 api_router.include_router(artifacts.router)
 api_router.include_router(code.router)
+api_router.include_router(filesystem.router)
 api_router.include_router(providers.router)
 api_router.include_router(process_models.router)
 api_router.include_router(projects.router)

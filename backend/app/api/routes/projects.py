@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -77,11 +79,22 @@ def create_project(
     if model is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不支持的过程模型")
 
+    folder: str | None = None
+    if payload.folder:
+        folder_path = Path(payload.folder)
+        if not folder_path.is_absolute() or not folder_path.is_dir():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="项目文件夹必须是本机上已存在的绝对路径",
+            )
+        folder = str(folder_path)
+
     project = Project(
         owner_id=user.id,
         process_model_id=model.id,
         name=payload.name,
         description=payload.description,
+        folder=folder,
     )
     db.add(project)
     db.commit()

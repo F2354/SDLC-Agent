@@ -4,7 +4,19 @@ from app.models import AgentRole, ProcessModel, Project, Stage, User  # noqa: F4
 from app.services.seed import seed_all
 
 
+def _ensure_project_folder_column() -> None:
+    with engine.begin() as conn:
+        columns = [
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(projects)")
+        ]
+        if columns and "folder" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE projects ADD COLUMN folder VARCHAR(500)"
+            )
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
+    _ensure_project_folder_column()
     with SessionLocal() as db:
         seed_all(db)

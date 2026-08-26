@@ -31,6 +31,7 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
     process_model_code: str = Field(default="waterfall")
+    folder: str | None = Field(default=None, max_length=500)
 
 
 class ProjectUpdate(BaseModel):
@@ -44,6 +45,7 @@ class ProjectOut(BaseModel):
     id: int
     name: str
     description: str
+    folder: str | None = None
     status: str
     process_model: ProcessModelSummary
     owner_id: int
