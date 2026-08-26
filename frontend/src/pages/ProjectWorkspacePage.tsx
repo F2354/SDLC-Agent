@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useParams } from 'react-router-dom'
+import { useSearchParams, useParams } from 'react-router-dom'
 
 import {
   approveStageRun,
@@ -65,6 +65,8 @@ function renderTime(value: string) {
 
 export default function ProjectWorkspacePage() {
   const { projectId } = useParams()
+  const [searchParams] = useSearchParams()
+  const tab = searchParams.get('tab') ?? 'chat'
   const [flow, setFlow] = useState<ProjectFlow | null>(null)
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([])
@@ -321,8 +323,14 @@ export default function ProjectWorkspacePage() {
     return flow.stages[index - 1].status === 'approved'
   }
 
+  const requirementsStage = flow?.stages[0]
+  const requirementsNeedsStart =
+    tab === 'chat' &&
+    requirementsStage !== undefined &&
+    (requirementsStage.status === 'pending' || requirementsStage.status === 'rejected')
+
   return (
-    <div>
+    <div className="flex min-h-full flex-col">
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-lg font-semibold">项目 #{projectId}</h1>
@@ -352,7 +360,34 @@ export default function ProjectWorkspacePage() {
 
       {error && <div className="mt-4 text-sm text-red-600">{error}</div>}
 
-      {stats && (
+      {requirementsNeedsStart && (
+        <div className="mt-6 flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white p-12 text-center">
+          <h2 className="text-lg font-semibold">
+            {requirementsStage?.status === 'rejected' ? '需求被打回，重新开始访谈' : '开始需求访谈'}
+          </h2>
+          <p className="mt-2 max-w-md text-sm leading-6 text-slate-500">
+            需求分析师 Agent 将通过对话收集项目需求，确认后生成需求规格说明书。
+          </p>
+          <div className="mt-6 flex gap-3">
+            <button
+              onClick={() => void handleStart('requirements', 'chat')}
+              disabled={starting === 'requirements'}
+              className="rounded-md bg-slate-900 px-5 py-2.5 text-sm text-white"
+            >
+              {starting === 'requirements' ? '启动中...' : '访谈模式'}
+            </button>
+            <button
+              onClick={() => void handleStart('requirements', 'auto')}
+              disabled={starting === 'requirements'}
+              className="rounded-md border border-slate-300 px-5 py-2.5 text-sm text-slate-600"
+            >
+              自动生成
+            </button>
+          </div>
+        </div>
+      )}
+
+      {tab === 'stages' && stats && (
         <div className="mt-6 grid grid-cols-4 gap-3">
           <div className="rounded-lg border border-slate-200 bg-white p-4">
             <div className="text-xs text-slate-500">产物数量</div>
@@ -377,8 +412,8 @@ export default function ProjectWorkspacePage() {
         </div>
       )}
 
-      {flow && (
-        <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
+      {flow && tab === 'code' && (
+        <div className="mt-6 flex min-h-0 flex-1 flex-col rounded-lg border border-slate-200 bg-white p-5">
           <div className="flex items-center justify-between">
             <h2 className="font-medium">生成代码</h2>
             <div className="flex gap-2">
@@ -440,7 +475,7 @@ export default function ProjectWorkspacePage() {
         </div>
       )}
 
-      {flow && (
+      {flow && tab === 'stages' && (
         <div className="mt-6 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(170px,1fr))]">
           {flow.stages.map(({ stage, status }, index) => (
             <div key={stage.code} className={cardClass(status)}>
@@ -492,10 +527,10 @@ export default function ProjectWorkspacePage() {
         </div>
       )}
 
-      {collectingRunId && (
+      {collectingRunId && tab === 'chat' && (
         <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
           <h2 className="font-medium">需求访谈</h2>
-          <div className="mt-3 max-h-80 space-y-2 overflow-auto">
+          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto">
             {messages.map((message) => (
               <div
                 key={message.id}
@@ -533,7 +568,7 @@ export default function ProjectWorkspacePage() {
         </div>
       )}
 
-      {awaitingRunId && (
+      {awaitingRunId && (tab === 'chat' || tab === 'stages') && (
         <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-5">
           <h2 className="font-medium">阶段评审</h2>
           <textarea
@@ -564,7 +599,7 @@ export default function ProjectWorkspacePage() {
         </div>
       )}
 
-      {flow && (
+      {flow && tab === 'artifacts' && (
         <div className="mt-6">
           <h2 className="font-medium">阶段产物</h2>
           <div className="mt-3 space-y-2">
@@ -646,7 +681,7 @@ export default function ProjectWorkspacePage() {
         </div>
       )}
 
-      {traceability && (
+      {traceability && tab === 'artifacts' && (
         <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
           <h2 className="font-medium">追溯矩阵</h2>
           {traceability.warnings.length > 0 && (
@@ -689,22 +724,24 @@ export default function ProjectWorkspacePage() {
         </div>
       )}
 
-      <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
-        <h2 className="font-medium">Agent 活动日志</h2>
-        <ul className="mt-3 max-h-72 space-y-2 overflow-auto text-sm">
-          {activityEvents.length === 0 && (
-            <li className="text-slate-500">暂无活动记录。</li>
-          )}
-          {activityEvents.map((event) => (
-            <li key={event.id} className="flex items-start gap-2 text-slate-600">
-              <span className="shrink-0 text-xs text-slate-400">
-                {renderTime(event.created_at)}
-              </span>
-              <span>{event.message}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      {tab === 'logs' && (
+        <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="font-medium">Agent 活动日志</h2>
+          <ul className="mt-3 max-h-72 space-y-2 overflow-auto text-sm">
+            {activityEvents.length === 0 && (
+              <li className="text-slate-500">暂无活动记录。</li>
+            )}
+            {activityEvents.map((event) => (
+              <li key={event.id} className="flex items-start gap-2 text-slate-600">
+                <span className="shrink-0 text-xs text-slate-400">
+                  {renderTime(event.created_at)}
+                </span>
+                <span>{event.message}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

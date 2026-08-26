@@ -1,20 +1,16 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 
 import {
   browseFilesystem,
   createProject,
   listProcessModels,
-  listProjects,
   type FsBrowse,
   type ProcessModel,
-  type Project,
 } from '../lib/api'
 
 export default function ProjectsPage() {
-  const [projects, setProjects] = useState<Project[]>([])
   const [processModels, setProcessModels] = useState<ProcessModel[]>([])
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
@@ -25,27 +21,30 @@ export default function ProjectsPage() {
   const [browse, setBrowse] = useState<FsBrowse | null>(null)
   const [pickerLoading, setPickerLoading] = useState(false)
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
 
   async function load() {
-    setLoading(true)
     setError('')
     try {
-      const [projectList, models] = await Promise.all([listProjects(), listProcessModels()])
-      setProjects(projectList)
+      const models = await listProcessModels()
       setProcessModels(models)
       if (models.length > 0) {
         setModelCode(models[0].code)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载失败')
-    } finally {
-      setLoading(false)
     }
   }
 
   useEffect(() => {
     void load()
   }, [])
+
+  useEffect(() => {
+    if (searchParams.get('new') === '1') {
+      setCreating(true)
+    }
+  }, [searchParams])
 
   async function openPicker() {
     setPickerOpen(true)
@@ -97,38 +96,7 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[300px_1fr]">
-      <aside className="flex min-h-0 flex-col rounded-lg border border-slate-200 bg-white">
-        <div className="border-b border-slate-100 px-4 py-3">
-          <h2 className="text-sm font-semibold">我的项目</h2>
-          <p className="mt-0.5 text-xs text-slate-400">{projects.length} 个项目</p>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto p-3">
-          {loading && <div className="px-2 py-6 text-center text-xs text-slate-400">加载中...</div>}
-          {!loading && projects.length === 0 && (
-            <div className="px-2 py-8 text-center text-xs leading-5 text-slate-400">
-              还没有项目
-              <br />
-              从右侧创建第一个项目
-            </div>
-          )}
-          <div className="space-y-2">
-            {projects.map((project) => (
-              <button
-                key={project.id}
-                onClick={() => navigate(`/projects/${project.id}`)}
-                className="block w-full rounded-md border border-transparent px-3 py-2.5 text-left hover:border-slate-200 hover:bg-slate-50"
-              >
-                <div className="truncate text-sm font-medium text-slate-800">{project.name}</div>
-                <div className="mt-0.5 truncate text-xs text-slate-400">
-                  {project.process_model?.name ?? '未设置过程模型'}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      </aside>
-
+    <div className="h-full">
       <section className="flex min-h-0 flex-col rounded-lg border border-slate-200 bg-white">
         {creating ? (
           <form onSubmit={handleCreate} className="flex min-h-0 flex-1 flex-col overflow-auto p-8">
