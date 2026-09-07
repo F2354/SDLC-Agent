@@ -9,34 +9,70 @@ export class ApiError extends Error {
   }
 }
 
-export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers ?? {}),
-    },
-    ...options,
-  })
+/** 默认请求超时（毫秒）。 */
+const DEFAULT_TIMEOUT_MS = 30_000
+/** 可能耗时很长的请求（阶段运行、代码执行）超时（毫秒）。 */
+const LONG_TIMEOUT_MS = 600_000
+
+export function parseErrorBody(body: string, status: number): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: string }
+    if (parsed.detail) {
+      return parsed.detail
+    }
+  } catch {
+    // body 不是 JSON 时直接使用原始文本
+  }
+  return body || `请求失败: ${status}`
+}
+
+export async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  // 组合调用方传入的 signal，保证组件卸载时能取消请求。
+  const external = options.signal
+  const onExternalAbort = () => controller.abort()
+  external?.addEventListener('abort', onExternalAbort, { once: true })
+
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      // headers 必须在 ...options 之后合并，否则会被整体覆盖导致 Content-Type 丢失。
+      headers: {
+        'Content-Type': 'application/json',
+        ...(options.headers ?? {}),
+      },
+      signal: controller.signal,
+    })
+  } catch (err) {
+    if (controller.signal.aborted && !external?.aborted) {
+      throw new ApiError(0, `请求超时（${Math.round(timeoutMs / 1000)} 秒）`)
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+    external?.removeEventListener('abort', onExternalAbort)
+  }
 
   if (!response.ok) {
-    const body = await response.text()
-    let message = body
-    try {
-      const parsed = JSON.parse(body) as { detail?: string }
-      if (parsed.detail) {
-        message = parsed.detail
-      }
-    } catch {
-      // body 不是 JSON 时直接使用原始文本
-    }
-    throw new ApiError(response.status, message || `请求失败: ${response.status}`)
+    throw new ApiError(response.status, parseErrorBody(await response.text(), response.status))
   }
 
   if (response.status === 204) {
     return undefined as T
   }
 
-  return response.json() as Promise<T>
+  const body = await response.text()
+  if (!body.trim()) {
+    // 后端返回空响应体时不应抛 SyntaxError。
+    return undefined as T
+  }
+  return JSON.parse(body) as T
 }
 
 export interface Stage {
@@ -121,10 +157,6 @@ export interface Message {
   agent_code: string | null
   content: string
   created_at: string
-}
-
-export interface ReviewRequest {
-  comment?: string
 }
 
 export interface ActivityEvent {
@@ -262,14 +294,14 @@ export function startStage(
   stageCode: string,
   payload: StageStartPayload = {},
 ) {
-  return request<StageRun>(`/projects/${projectId}/stages/${stageCode}/start`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export function getStageRun(runId: number) {
-  return request<StageRun>(`/stage-runs/${runId}`)
+  return request<StageRun>(
+    `/projects/${projectId}/stages/${stageCode}/start`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    LONG_TIMEOUT_MS,
+  )
 }
 
 export function listProjectArtifacts(projectId: number) {
@@ -335,31 +367,31 @@ export async function getCodeFile(projectId: number, path: string) {
     `${API_BASE}/projects/${projectId}/code/file?path=${encodeURIComponent(path)}`,
   )
   if (!response.ok) {
-    const body = await response.text()
-    throw new ApiError(response.status, body || `读取失败: ${response.status}`)
+    throw new ApiError(response.status, parseErrorBody(await response.text(), response.status))
   }
   return response.text()
 }
 
 export function runGeneratedCode(projectId: number) {
-  return request<CodeRun>(`/projects/${projectId}/code/run`, {
-    method: 'POST',
-  })
+  return request<CodeRun>(
+    `/projects/${projectId}/code/run`,
+    { method: 'POST' },
+    LONG_TIMEOUT_MS,
+  )
 }
 
 export function testGeneratedCode(projectId: number) {
-  return request<CodeRun>(`/projects/${projectId}/code/test`, {
-    method: 'POST',
-  })
+  return request<CodeRun>(
+    `/projects/${projectId}/code/test`,
+    { method: 'POST' },
+    LONG_TIMEOUT_MS,
+  )
 }
 
 export async function exportArtifact(artifactId: number, format: 'docx' | 'pdf') {
-  const response = await fetch(
-    `${API_BASE}/artifacts/${artifactId}/export?format=${format}`,
-  )
+  const response = await fetch(`${API_BASE}/artifacts/${artifactId}/export?format=${format}`)
   if (!response.ok) {
-    const body = await response.text()
-    throw new ApiError(response.status, body || `导出失败: ${response.status}`)
+    throw new ApiError(response.status, parseErrorBody(await response.text(), response.status))
   }
   return response.blob()
 }

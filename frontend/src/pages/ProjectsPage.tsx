@@ -15,7 +15,9 @@ export default function ProjectsPage() {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [modelCode, setModelCode] = useState('waterfall')
+  // 不使用硬编码默认值：加载失败时应阻止提交，而不是用可能不存在的 code。
+  const [modelCode, setModelCode] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const [folder, setFolder] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [browse, setBrowse] = useState<FsBrowse | null>(null)
@@ -28,11 +30,9 @@ export default function ProjectsPage() {
     try {
       const models = await listProcessModels()
       setProcessModels(models)
-      if (models.length > 0) {
-        setModelCode(models[0].code)
-      }
+      setModelCode((prev) => (prev || models[0]?.code || ''))
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载失败')
+      setError(err instanceof Error ? err.message : '加载过程模型失败')
     }
   }
 
@@ -77,11 +77,19 @@ export default function ProjectsPage() {
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault()
+    if (submitting) {
+      return
+    }
     if (!folder) {
       setError('请先选择项目文件夹')
       return
     }
+    if (!modelCode) {
+      setError('开发模型尚未加载完成，请稍后重试')
+      return
+    }
     setError('')
+    setSubmitting(true)
     try {
       const project = await createProject({
         name,
@@ -92,12 +100,14 @@ export default function ProjectsPage() {
       navigate(`/projects/${project.id}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : '创建失败')
+    } finally {
+      setSubmitting(false)
     }
   }
 
   return (
     <div className="h-full">
-      <section className="flex min-h-0 flex-col rounded-lg border border-slate-200 bg-white">
+      <section className="flex h-full min-h-0 flex-col rounded-lg border border-slate-200 bg-white">
         {creating ? (
           <form onSubmit={handleCreate} className="flex min-h-0 flex-1 flex-col overflow-auto p-8">
             <h1 className="text-xl font-semibold">创建新项目</h1>
@@ -161,15 +171,17 @@ export default function ProjectsPage() {
             <div className="mt-8 flex gap-3">
               <button
                 className="rounded-md bg-slate-900 px-6 py-2.5 text-sm text-white disabled:opacity-50"
-                disabled={!folder}
+                disabled={!folder || !modelCode || submitting}
               >
-                创建项目
+                {submitting ? '创建中...' : '创建项目'}
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setCreating(false)
                   setError('')
+                  // 清理 new=1 参数，避免刷新后重新弹出表单。
+                  navigate('/projects', { replace: true })
                 }}
                 className="rounded-md border border-slate-300 px-6 py-2.5 text-sm text-slate-600"
               >
@@ -195,13 +207,13 @@ export default function ProjectsPage() {
       </section>
 
       {pickerOpen && browse && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-[560px] max-w-[92vw] rounded-lg bg-white p-5 shadow-xl">
-            <h3 className="font-medium">选择项目文件夹</h3>
-            <div className="mt-2 break-all rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-auto bg-black/40 p-4">
+          <div className="flex max-h-full w-[min(560px,92vw)] flex-col overflow-hidden rounded-lg bg-white p-5 shadow-xl">
+            <h3 className="shrink-0 font-medium">选择项目文件夹</h3>
+            <div className="mt-2 shrink-0 break-all rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500">
               {browse.path || '此电脑'}
             </div>
-            <div className="mt-3 max-h-72 min-h-40 overflow-auto rounded-md border border-slate-200">
+            <div className="mt-3 min-h-40 flex-1 overflow-y-auto rounded-md border border-slate-200">
               {pickerLoading && (
                 <div className="px-4 py-8 text-center text-xs text-slate-400">加载中...</div>
               )}
@@ -220,7 +232,7 @@ export default function ProjectsPage() {
                 </button>
               ))}
             </div>
-            <div className="mt-4 flex items-center justify-between">
+            <div className="mt-4 flex shrink-0 items-center justify-between">
               <button
                 type="button"
                 onClick={() => void goUp()}

@@ -12,6 +12,10 @@ if TYPE_CHECKING:
     from app.models.project import Project
 
 
+# 阶段运行被删除时，其下所有制品、消息、评审一并级联删除。
+_STAGE_RUN_CASCADE = "all, delete-orphan"
+
+
 class StageRun(Base):
     __tablename__ = "stage_runs"
 
@@ -28,10 +32,18 @@ class StageRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    project: Mapped["Project"] = relationship()
+    project: Mapped["Project"] = relationship(back_populates="stage_runs")
     stage: Mapped["Stage"] = relationship()
     provider: Mapped["LLMProvider | None"] = relationship()
-    artifacts: Mapped[list["Artifact"]] = relationship(back_populates="stage_run")
+    artifacts: Mapped[list["Artifact"]] = relationship(
+        back_populates="stage_run", cascade=_STAGE_RUN_CASCADE
+    )
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="stage_run", cascade=_STAGE_RUN_CASCADE
+    )
+    reviews: Mapped[list["Review"]] = relationship(
+        back_populates="stage_run", cascade=_STAGE_RUN_CASCADE
+    )
 
 
 class Artifact(Base):
@@ -50,12 +62,15 @@ class Artifact(Base):
         DateTime, server_default=func.now(), onupdate=func.now()
     )
 
-    project: Mapped["Project"] = relationship()
+    project: Mapped["Project"] = relationship(back_populates="artifacts")
     stage_run: Mapped["StageRun"] = relationship(back_populates="artifacts")
     versions: Mapped[list["ArtifactVersion"]] = relationship(
         back_populates="artifact",
         cascade="all, delete-orphan",
         order_by="ArtifactVersion.version_no",
+    )
+    reviews: Mapped[list["Review"]] = relationship(
+        back_populates="artifact", cascade="all, delete-orphan"
     )
 
 
@@ -87,6 +102,8 @@ class ActivityEvent(Base):
     data_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    project: Mapped["Project"] = relationship(back_populates="activity_events")
+
 
 class Message(Base):
     __tablename__ = "messages"
@@ -98,6 +115,9 @@ class Message(Base):
     agent_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    project: Mapped["Project"] = relationship(back_populates="messages")
+    stage_run: Mapped["StageRun"] = relationship(back_populates="messages")
 
 
 class Review(Base):
@@ -112,3 +132,6 @@ class Review(Base):
     result: Mapped[str] = mapped_column(String(20))
     comment: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    stage_run: Mapped["StageRun"] = relationship(back_populates="reviews")
+    artifact: Mapped["Artifact | None"] = relationship(back_populates="reviews")

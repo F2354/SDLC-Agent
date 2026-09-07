@@ -40,6 +40,7 @@ export default function AppShell() {
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [aboutOpen, setAboutOpen] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const menuRef = useRef<HTMLDivElement>(null)
 
   const projectMatch = location.pathname.match(/^\/projects\/(\d+)/)
@@ -47,12 +48,26 @@ export default function AppShell() {
   const activeTab = new URLSearchParams(location.search).get('tab') ?? 'chat'
 
   useEffect(() => {
-    listProjects()
-      .then(setProjects)
-      .catch(() => {})
-    listProviders()
-      .then((list) => setProvider(list[0] ?? null))
-      .catch(() => {})
+    // 竞态保护：组件卸载或路由已切换时丢弃过期响应。
+    let stale = false
+    Promise.all([
+      listProjects().then((list) => {
+        if (!stale) setProjects(list)
+      }),
+      listProviders().then((list) => {
+        if (!stale) setProvider(list[0] ?? null)
+      }),
+    ])
+      .then(() => {
+        if (!stale) setLoadError('')
+      })
+      .catch((err) => {
+        if (stale) return
+        setLoadError(err instanceof Error ? err.message : '加载失败，请检查后端服务是否已启动')
+      })
+    return () => {
+      stale = true
+    }
   }, [location.pathname])
 
   useEffect(() => {
@@ -61,8 +76,18 @@ export default function AppShell() {
         setOpenMenu(null)
       }
     }
+    function handleKeydown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpenMenu(null)
+        setAboutOpen(false)
+      }
+    }
     document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
+    document.addEventListener('keydown', handleKeydown)
+    return () => {
+      document.removeEventListener('mousedown', handleClick)
+      document.removeEventListener('keydown', handleKeydown)
+    }
   }, [])
 
   function handleMenuAction(action: string) {
@@ -130,8 +155,13 @@ export default function AppShell() {
             项目
             <span className="text-slate-400">{projectsOpen ? '▾' : '▸'}</span>
           </button>
+          {loadError && (
+            <div className="mx-4 mt-2 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] leading-4 text-red-600">
+              {loadError}
+            </div>
+          )}
           {projectsOpen && (
-            <nav className="mt-1 max-h-64 overflow-auto px-2">
+            <nav className="mt-1 min-h-0 flex-1 overflow-y-auto px-2">
               {projects.length === 0 && (
                 <div className="px-2 py-3 text-xs text-slate-400">暂无项目</div>
               )}
@@ -152,7 +182,7 @@ export default function AppShell() {
           )}
 
           {activeProjectId !== null && projectsOpen && (
-            <div className="mt-4 border-t border-slate-100 px-2 pt-3">
+            <div className="mt-4 shrink-0 border-t border-slate-100 px-2 pt-3">
               <div className="px-2 text-xs font-medium text-slate-500">工作台</div>
               <nav className="mt-1 space-y-0.5">
                 {workspaceSections.map((section) => (
@@ -172,10 +202,9 @@ export default function AppShell() {
             </div>
           )}
 
-          <div className="flex-1" />
           <button
             onClick={() => navigate('/providers')}
-            className="flex items-center gap-2 border-t border-slate-200 px-3 py-3 text-left hover:bg-slate-50"
+            className="mt-auto flex items-center gap-2 border-t border-slate-200 px-3 py-3 text-left hover:bg-slate-50"
           >
             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-slate-900 text-[10px] text-white">
               AI
@@ -199,8 +228,14 @@ export default function AppShell() {
       </div>
 
       {aboutOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-80 rounded-lg bg-white p-6 text-center shadow-xl">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-auto bg-black/40 p-4"
+          onClick={() => setAboutOpen(false)}
+        >
+          <div
+            className="max-h-full w-80 rounded-lg bg-white p-6 text-center shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
             <h3 className="font-semibold">SDLC Agent</h3>
             <p className="mt-2 text-sm text-slate-500">
               软件生命周期智能协作平台

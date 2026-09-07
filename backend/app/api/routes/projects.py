@@ -176,6 +176,34 @@ def start_stage(
     if running is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该阶段正在执行")
 
+    # Enforce stage sequence: previous stage must be approved
+    all_stages = list(
+        db.scalars(
+            select(Stage)
+            .where(Stage.process_model_id == project.process_model_id)
+            .order_by(Stage.seq)
+        )
+    )
+    for idx, s in enumerate(all_stages):
+        if s.id == stage.id:
+            if idx > 0:
+                prev_stage = all_stages[idx - 1]
+                prev_run = db.scalar(
+                    select(StageRun)
+                    .where(
+                        StageRun.project_id == project.id,
+                        StageRun.stage_id == prev_stage.id,
+                        StageRun.status == "approved",
+                    )
+                    .order_by(StageRun.id.desc())
+                )
+                if prev_run is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"请先完成并通过上一阶段「{prev_stage.name}」",
+                    )
+            break
+
     provider = None
     if payload.provider_id is not None:
         provider = db.scalar(

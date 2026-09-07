@@ -8,6 +8,7 @@ from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.process_model import ProcessModel
+    from app.models.stage_run import ActivityEvent, Artifact, Message, StageRun
     from app.models.user import User
 
 
@@ -30,3 +31,17 @@ class Project(Base):
 
     owner: Mapped["User"] = relationship(back_populates="projects")
     process_model: Mapped["ProcessModel"] = relationship(back_populates="projects")
+
+    # 删除项目时级联清理所有关联数据，避免产生孤儿记录。
+    stage_runs: Mapped[list["StageRun"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    artifacts: Mapped[list["Artifact"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    activity_events: Mapped[list["ActivityEvent"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )

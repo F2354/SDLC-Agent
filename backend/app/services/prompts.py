@@ -19,6 +19,50 @@ STAGE_ROLE = {
         "测试工程师",
         "负责测试策略、测试计划、测试用例与测试报告模板。",
     ),
+    "risk-analysis": (
+        "风险分析师",
+        "负责识别项目技术风险、资源风险与进度风险，制定缓解策略。",
+    ),
+    "evaluation": (
+        "评审专家",
+        "负责评估当前阶段成果，判断是否满足验收标准并给出改进建议。",
+    ),
+    "iteration-review": (
+        "评审专家",
+        "负责评审本迭代产物，确认是否满足验收标准，规划下一迭代目标。",
+    ),
+    "prototype": (
+        "原型工程师",
+        "负责基于需求快速构建可交互的原型系统，验证核心交互流程。",
+    ),
+    "user-feedback": (
+        "需求分析师",
+        "负责收集用户对原型的反馈意见，整理改进需求。",
+    ),
+    "refinement": (
+        "需求分析师",
+        "负责根据用户反馈精化需求规格，更新需求文档。",
+    ),
+    "backlog": (
+        "产品负责人",
+        "负责梳理产品需求，按优先级排列用户故事，估算工作量。",
+    ),
+    "sprint-planning": (
+        "Scrum Master",
+        "负责组织 Sprint 计划会议，从产品待办列表中选取目标并拆分任务。",
+    ),
+    "sprint-dev": (
+        "开发工程师",
+        "负责按任务列表进行编码实现，生成可运行代码。",
+    ),
+    "sprint-review": (
+        "Scrum Master",
+        "负责组织 Sprint 评审会议，演示产出并收集利益相关者反馈。",
+    ),
+    "sprint-retrospective": (
+        "Scrum Master",
+        "负责组织 Sprint 回顾会议，回顾团队协作流程并识别改进点。",
+    ),
 }
 
 STAGE_STRUCTURE = {
@@ -55,6 +99,72 @@ STAGE_STRUCTURE = {
         "测试计划",
         "测试用例（测试用例 TC-001）",
         "测试报告模板",
+    ],
+    "risk-analysis": [
+        "风险识别",
+        "风险评估矩阵",
+        "缓解策略",
+        "监控计划",
+    ],
+    "evaluation": [
+        "成果评估",
+        "验收标准检查",
+        "风险复审",
+        "下一阶段建议",
+    ],
+    "iteration-review": [
+        "迭代目标回顾",
+        "产物评审",
+        "验收标准检查",
+        "下一迭代规划",
+    ],
+    "prototype": [
+        "原型设计",
+        "交互流程",
+        "技术实现方案",
+        "原型演示说明",
+    ],
+    "user-feedback": [
+        "反馈收集",
+        "问题分类",
+        "改进优先级",
+        "用户满意度",
+    ],
+    "refinement": [
+        "需求变更记录",
+        "更新后的需求规格",
+        "影响分析",
+        "验收标准更新",
+    ],
+    "backlog": [
+        "用户故事列表",
+        "优先级排序",
+        "工作量估算",
+        "验收标准",
+    ],
+    "sprint-planning": [
+        "Sprint 目标",
+        "任务拆分",
+        "工作量分配",
+        "风险识别",
+    ],
+    "sprint-dev": [
+        "编码实现",
+        "单元测试",
+        "代码评审",
+        "集成说明",
+    ],
+    "sprint-review": [
+        "演示内容",
+        "利益相关者反馈",
+        "问题记录",
+        "改进建议",
+    ],
+    "sprint-retrospective": [
+        "做得好的地方",
+        "需要改进的地方",
+        "改进计划",
+        "团队行动项",
     ],
 }
 
@@ -104,6 +214,58 @@ def build_code_stage_prompt(
     if stage_code == "coding":
         system = (
             "你是一名开发工程师，负责根据需求与设计文档生成一个可运行的 Python FastAPI 项目。"
+            "代码必须能通过语法检查和启动验证。"
+            "只输出代码文件，不要输出解释性文字。"
+        )
+        user = (
+            f"项目名称：{project_name}\n"
+            f"项目描述：{project_description}\n"
+            f"当前阶段：{stage_name}\n\n"
+            f"前置文档：\n{previous_artifacts or '（无）'}\n\n"
+            "请生成一个完整的 FastAPI 项目，包含以下文件：\n"
+            "[FILE] requirements.txt\n"
+            "[FILE] app/main.py\n"
+            "[FILE] app/models.py\n"
+            "[FILE] README.md\n"
+            "[FILE] tests/test_app.py\n\n"
+            "要求：\n"
+            "1. 每个文件必须使用 [FILE] 路径 开头，文件内容紧跟在下一行。\n"
+            "2. app/main.py 使用 FastAPI 和 SQLite，必须暴露 /health 接口。\n"
+            "3. main.py 可以直接运行：python app/main.py。\n"
+            "4. tests/test_app.py 使用 pytest 和 TestClient 测试 /health。\n"
+            "5. requirements.txt 至少包含 fastapi、uvicorn、pytest、httpx。\n"
+            "6. 禁止使用 Markdown 代码围栏，文件内容直接写在 [FILE] 行之后，不要出现 ```。\n"
+            "7. 禁止使用 passlib，密码处理使用 hashlib 或 PyJWT。\n"
+            "8. requirements.txt 只写包名，不写任何版本号。\n"
+            "9. 测试文件路径必须是 tests/test_app.py，不能嵌套成 tests/tests/test_app.py。\n"
+            "10. app/main.py 必须使用 if __name__ == \"__main__\" 才启动 uvicorn。"
+        )
+    elif stage_code == "prototype":
+        system = (
+            "你是一名原型工程师，负责根据需求快速构建一个可交互的 Python FastAPI 原型项目。"
+            "原型重点验证核心交互流程，代码必须能通过语法检查和启动验证。"
+            "只输出代码文件，不要输出解释性文字。"
+        )
+        user = (
+            f"项目名称：{project_name}\n"
+            f"项目描述：{project_description}\n"
+            f"当前阶段：{stage_name}\n\n"
+            f"前置文档：\n{previous_artifacts or '（无）'}\n\n"
+            "请生成一个可交互的 FastAPI 原型项目，包含以下文件：\n"
+            "[FILE] requirements.txt\n"
+            "[FILE] app/main.py\n"
+            "[FILE] README.md\n\n"
+            "要求：\n"
+            "1. 每个文件必须使用 [FILE] 路径 开头，文件内容紧跟在下一行。\n"
+            "2. app/main.py 使用 FastAPI，必须暴露核心业务接口和 /health。\n"
+            "3. 原型使用内存数据或 SQLite，重点验证交互流程。\n"
+            "4. 禁止使用 Markdown 代码围栏，文件内容直接写在 [FILE] 行之后。\n"
+            "5. requirements.txt 只写包名，不写任何版本号。\n"
+            "6. app/main.py 必须使用 if __name__ == \"__main__\" 才启动 uvicorn。"
+        )
+    elif stage_code == "sprint-dev":
+        system = (
+            "你是一名开发工程师，负责按 Sprint 任务列表实现功能，生成可运行的 Python FastAPI 项目。"
             "代码必须能通过语法检查和启动验证。"
             "只输出代码文件，不要输出解释性文字。"
         )

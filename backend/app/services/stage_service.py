@@ -1,4 +1,6 @@
-import threading
+import atexit
+import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TypedDict
 
@@ -23,11 +25,32 @@ from app.services.llm_service import build_openai_client
 from app.services.prompts import build_code_stage_prompt, build_stage_prompt
 from app.services.code_service import (
     list_code_files,
-    run_tests,
+    run_stage_tests,
     run_verify,
     write_files,
 )
 from app.services.coding_agent import run_coding_harness
+
+logger = logging.getLogger("uvicorn.error")
+
+# 有界线程池：避免每个阶段启动一个裸线程导致资源无上限增长。
+_MAX_CONCURRENT_STAGE_RUNS = 4
+_stage_executor = ThreadPoolExecutor(
+    max_workers=_MAX_CONCURRENT_STAGE_RUNS, thread_name_prefix="stage-run"
+)
+_executor_closed = False
+
+
+def shutdown_stage_executor(wait: bool = False) -> None:
+    """关闭阶段运行线程池（应用退出时调用）。"""
+    global _executor_closed
+    if _executor_closed:
+        return
+    _executor_closed = True
+    _stage_executor.shutdown(wait=wait, cancel_futures=False)
+
+
+atexit.register(shutdown_stage_executor)
 
 
 REQUIREMENTS_SYSTEM_PROMPT = (
@@ -203,11 +226,13 @@ def execute_code_stage(
             if attempt == max_attempts:
                 raise
             continue
-        result = run_verify(project.id) if stage.code == "coding" else run_tests(project.id)
+        result = run_verify(project.id) if stage.code == "coding" else run_stage_tests(project.id, stage_code=stage.code)
         if result.ok:
             break
         error_info = result.output[:2000]
 
+    verified_ok = result is not None and result.ok
+    artifact_status = "awaiting_review" if verified_ok else "verification_failed"
     artifact = Artifact(
         project_id=project.id,
         stage_run_id=run.id,
@@ -218,7 +243,7 @@ def execute_code_stage(
             f"{content}\n\n"
             f"## 验证结果\n\n{result.model_dump_json(indent=2) if result else '未生成验证结果'}"
         ),
-        status="awaiting_review",
+        status=artifact_status,
     )
     db.add(artifact)
     db.flush()
@@ -235,8 +260,8 @@ def execute_code_stage(
         ActivityEvent(
             project_id=project.id,
             stage_run_id=run.id,
-            event_type="artifact_saved",
-            message=f"{stage.name}产物与运行验证结果已生成",
+            event_type="artifact_saved" if verified_ok else "verification_failed",
+            message=f"{stage.name}产物与运行验证结果已生成" if verified_ok else f"{stage.name}验证未通过",
         )
     )
     db.commit()
@@ -298,7 +323,7 @@ def execute_coding_harness_stage(
         type=stage.code,
         title=f"{stage.name}与验证结果",
         content_md=content_md,
-        status="awaiting_review",
+        status="awaiting_review" if result.ok else "verification_failed",
     )
     db.add(artifact)
     db.flush()
@@ -309,17 +334,32 @@ def execute_coding_harness_stage(
             content_md=content_md,
         )
     )
-    run.status = "awaiting_review"
+    run.status = "awaiting_review" if result.ok else "verification_failed"
     run.finished_at = datetime.now()
     db.add(
         ActivityEvent(
             project_id=project.id,
             stage_run_id=run.id,
-            event_type="artifact_saved",
-            message=f"{stage.name}工具化编码与验证结果已生成",
+            event_type="artifact_saved" if result.ok else "verification_failed",
+            message=f"{stage.name}工具化编码与验证结果已生成" if result.ok else f"{stage.name}验证未通过",
         )
     )
     db.commit()
+
+
+def _friendly_stage_error(exc: Exception, model_name: str | None) -> str:
+    """把 LLM/执行异常翻译成用户可读的中文提示。"""
+    raw = str(exc) or exc.__class__.__name__
+    lowered = raw.lower()
+    if "auth" in lowered or "api_key" in lowered or "401" in lowered:
+        return f"API 认证失败，请检查 Provider 的 API Key 是否正确：{raw[:500]}"
+    if "timeout" in lowered or "timed out" in lowered:
+        return f"LLM 调用超时，请检查网络连接或稍后重试：{raw[:500]}"
+    if "rate" in lowered or "429" in lowered:
+        return f"请求频率超限，请稍后重试：{raw[:500]}"
+    if "model" in lowered and ("not found" in lowered or "does not exist" in lowered):
+        return f"模型 {model_name or ''} 不存在或不可用，请检查 Provider 配置：{raw[:500]}"
+    return raw[:2000]
 
 
 def execute_stage_run(stage_run_id: int) -> None:
@@ -327,10 +367,12 @@ def execute_stage_run(stage_run_id: int) -> None:
         run = db.get(StageRun, stage_run_id)
         if run is None:
             return
+        model_name: str | None = None
         try:
             stage = db.get(Stage, run.stage_id)
             project = db.get(Project, run.project_id)
             provider = db.get(LLMProvider, run.provider_id)
+            model_name = provider.default_model if provider is not None else None
             if stage is None or project is None:
                 raise ValueError("阶段或项目不存在")
             if provider is None or not provider.enabled:
@@ -342,6 +384,8 @@ def execute_stage_run(stage_run_id: int) -> None:
                 "unit-test",
                 "integration-test",
                 "system-test",
+                "prototype",
+                "sprint-dev",
             ):
                 execute_code_stage(stage, project, run, provider, db)
                 return
@@ -382,29 +426,38 @@ def execute_stage_run(stage_run_id: int) -> None:
             graph = build_stage_graph(provider, db, state)
             graph.invoke(state)
         except Exception as exc:
-            run = db.get(StageRun, stage_run_id)
-            run.status = "failed"
-            run.error = str(exc)[:2000]
-            run.finished_at = datetime.now()
-            db.add(
-                ActivityEvent(
-                    project_id=run.project_id,
-                    stage_run_id=run.id,
-                    event_type="agent_failed",
-                    message=str(exc)[:500],
+            logger.exception("阶段运行失败: stage_run_id=%s", stage_run_id)
+            # 先回滚，避免脏会话导致后续写入再次失败。
+            db.rollback()
+            try:
+                failed_run = db.get(StageRun, stage_run_id)
+                if failed_run is None:
+                    return
+                error_msg = _friendly_stage_error(exc, model_name)
+                failed_run.status = "failed"
+                failed_run.error = error_msg[:2000]
+                failed_run.finished_at = datetime.now()
+                db.add(
+                    ActivityEvent(
+                        project_id=failed_run.project_id,
+                        stage_run_id=failed_run.id,
+                        event_type="agent_failed",
+                        message=error_msg[:500],
+                    )
                 )
-            )
-            db.commit()
+                db.commit()
+            except Exception:
+                logger.exception(
+                    "记录阶段失败状态时出错: stage_run_id=%s", stage_run_id
+                )
+                db.rollback()
 
 
-def start_stage_run_async(
-    stage_run_id: int,
-) -> None:
-    threading.Thread(
-        target=execute_stage_run,
-        args=(stage_run_id,),
-        daemon=True,
-    ).start()
+def start_stage_run_async(stage_run_id: int) -> None:
+    if _executor_closed:
+        logger.warning("阶段运行线程池已关闭，忽略启动请求")
+        return
+    _stage_executor.submit(execute_stage_run, stage_run_id)
 
 
 def serialize_stage_run(run: StageRun, db: Session) -> StageRunOut:
@@ -565,8 +618,8 @@ def review_stage_run(
     result: str,
     comment: str = "",
 ) -> StageRun:
-    if run.status != "awaiting_review":
-        raise ValueError("当前阶段不在待评审状态")
+    if run.status not in ("awaiting_review", "verification_failed"):
+        raise ValueError("当前阶段不在可评审状态")
     artifacts = list(
         db.scalars(
             select(Artifact)

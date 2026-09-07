@@ -114,3 +114,67 @@ def test_process_models_include_v_model(client):
     assert "v-model" in codes
     v_model = next(model for model in models if model["code"] == "v-model")
     assert len(v_model["stages"]) == 7
+
+
+def test_process_models_include_all_models(client):
+    response = client.get("/api/process-models")
+    assert response.status_code == 200
+    models = response.json()
+    codes = [model["code"] for model in models]
+    expected = ["waterfall", "v-model", "iterative", "spiral", "prototype", "scrum"]
+    for code in expected:
+        assert code in codes, f"Missing model: {code}"
+    expected_stages = {
+        "waterfall": 5,
+        "v-model": 7,
+        "iterative": 6,
+        "spiral": 6,
+        "prototype": 6,
+        "scrum": 5,
+    }
+    for model in models:
+        if model["code"] in expected_stages:
+            assert len(model["stages"]) == expected_stages[model["code"]], (
+                f"{model['code']} has {len(model['stages'])} stages, expected {expected_stages[model['code']]}"
+            )
+
+
+def test_create_project_with_new_models(client):
+    """Test creating projects with each new model."""
+    for model_code in ["iterative", "spiral", "prototype", "scrum"]:
+        response = client.post(
+            "/api/projects",
+            json={"name": f"测试{model_code}", "process_model_code": model_code},
+        )
+        assert response.status_code == 201, f"Failed to create project with {model_code}"
+        project = response.json()
+        assert project["process_model"]["code"] == model_code
+
+        # Verify flow has correct stages
+        flow_response = client.get(f"/api/projects/{project['id']}/flow")
+        assert flow_response.status_code == 200
+        flow = flow_response.json()
+        assert len(flow["stages"]) > 0, f"No stages for {model_code}"
+        assert all(s["status"] == "pending" for s in flow["stages"])
+
+
+def test_stage_sequence_enforcement(client):
+    """Test that stages must be completed in order."""
+    # Create project with iterative model
+    response = client.post(
+        "/api/projects",
+        json={"name": "顺序测试项目", "process_model_code": "iterative"},
+    )
+    project_id = response.json()["id"]
+
+    # Try to start second stage without completing first
+    stages_response = client.get(f"/api/projects/{project_id}/flow")
+    stages = stages_response.json()["stages"]
+    second_stage_code = stages[1]["stage"]["code"]
+
+    start_response = client.post(
+        f"/api/projects/{project_id}/stages/{second_stage_code}/start",
+        json={"mode": "auto"},
+    )
+    assert start_response.status_code == 400
+    assert "请先完成" in start_response.json()["detail"]

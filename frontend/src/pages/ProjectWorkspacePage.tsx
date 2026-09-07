@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { useSearchParams, useParams } from 'react-router-dom'
 
 import {
@@ -40,6 +40,7 @@ const statusLabels: Record<string, string> = {
   approved: '已通过',
   rejected: '已打回',
   failed: '失败',
+  verification_failed: '验证未通过',
 }
 
 function cardClass(status: string) {
@@ -55,6 +56,9 @@ function cardClass(status: string) {
   }
   if (status === 'rejected' || status === 'failed') {
     return `${base} border-red-200 bg-red-50`
+  }
+  if (status === 'verification_failed') {
+    return `${base} border-orange-300 bg-orange-50`
   }
   return `${base} border-slate-200`
 }
@@ -92,53 +96,88 @@ export default function ProjectWorkspacePage() {
   const [reviewComment, setReviewComment] = useState('')
   const [reviewingId, setReviewingId] = useState<number | null>(null)
 
-  async function load() {
-    const id = Number(projectId)
-    if (!Number.isFinite(id)) {
-      setError('无效的项目 ID')
-      return
-    }
-    try {
-      const [nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace, nextCodeTree] =
-        await Promise.all([
-        getProjectFlow(id),
-        listProjectArtifacts(id),
-        listActivityEvents(id),
-        getProjectStats(id),
-        getTraceability(id),
-        getCodeTree(id),
-      ])
-      setFlow(nextFlow)
-      setArtifacts(nextArtifacts)
-      setActivityEvents(nextEvents)
-      setStats(nextStats)
-      setTraceability(nextTrace)
-      setCodeTree(nextCodeTree)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '加载失败')
-    }
-  }
+  const loadingRef = useRef(false)
+  const mountedRef = useRef(true)
 
   useEffect(() => {
-    void load()
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const projectIdNumber = Number(projectId)
+  const validProjectId =
+    Number.isInteger(projectIdNumber) && projectIdNumber > 0 ? projectIdNumber : null
+
+  const load = useCallback(
+    async (options: { force?: boolean } = {}) => {
+      if (validProjectId === null) {
+        setError('无效的项目 ID')
+        return
+      }
+      // 轮询并发保护：上一轮请求未结束时跳过本轮，避免请求雪崩。
+      if (loadingRef.current && !options.force) {
+        return
+      }
+      loadingRef.current = true
+      setError('')
+      try {
+        const [nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace, nextCodeTree] =
+          await Promise.all([
+            getProjectFlow(validProjectId),
+            listProjectArtifacts(validProjectId),
+            listActivityEvents(validProjectId),
+            getProjectStats(validProjectId),
+            getTraceability(validProjectId),
+            getCodeTree(validProjectId),
+          ])
+        if (!mountedRef.current) return
+        setFlow(nextFlow)
+        setArtifacts(nextArtifacts)
+        setActivityEvents(nextEvents)
+        setStats(nextStats)
+        setTraceability(nextTrace)
+        setCodeTree(nextCodeTree)
+      } catch (err) {
+        if (!mountedRef.current) return
+        setError(err instanceof Error ? err.message : '加载失败')
+      } finally {
+        loadingRef.current = false
+      }
+    },
+    [validProjectId],
+  )
+
+  const hasActiveStages = flow?.stages.some(({ status }) =>
+    status === 'generating' || status === 'collecting',
+  ) ?? false
+
+  useEffect(() => {
+    void load({ force: true })
+    if (!hasActiveStages) return
     const timer = window.setInterval(() => void load(), 3000)
     return () => window.clearInterval(timer)
-  }, [projectId])
+  }, [hasActiveStages, load])
 
   useEffect(() => {
     listProviders()
       .then((list) => {
+        if (!mountedRef.current) return
         setProviders(list)
         setSelectedProviderId((prev) => prev ?? list[0]?.id ?? null)
       })
-      .catch((err) => setError(err instanceof Error ? err.message : '加载模型服务失败'))
+      .catch((err) => {
+        if (!mountedRef.current) return
+        setError(err instanceof Error ? err.message : '加载模型服务失败')
+      })
   }, [])
 
   const collectingRunId =
     flow?.stages.find(({ status, stage_run_id }) => status === 'collecting' && !!stage_run_id)
       ?.stage_run_id ?? null
   const awaitingRunId =
-    flow?.stages.find(({ status, stage_run_id }) => status === 'awaiting_review' && !!stage_run_id)
+    flow?.stages.find(({ status, stage_run_id }) => (status === 'awaiting_review' || status === 'verification_failed') && !!stage_run_id)
       ?.stage_run_id ?? null
 
   useEffect(() => {
@@ -146,24 +185,38 @@ export default function ProjectWorkspacePage() {
       setMessages([])
       return
     }
+    // 竞态保护：只接受最后一次请求的结果。
+    let stale = false
     getStageRunMessages(collectingRunId)
-      .then(setMessages)
-      .catch((err) => setError(err instanceof Error ? err.message : '加载对话失败'))
+      .then((list) => {
+        if (stale || !mountedRef.current) return
+        setMessages(list)
+      })
+      .catch((err) => {
+        if (stale || !mountedRef.current) return
+        setError(err instanceof Error ? err.message : '加载对话失败')
+      })
+    return () => {
+      stale = true
+    }
   }, [collectingRunId])
 
   async function handleStart(stageCode: string, mode: 'auto' | 'chat' = 'auto') {
-    const id = Number(projectId)
-    if (!Number.isFinite(id)) {
+    if (validProjectId === null) {
+      return
+    }
+    if (selectedProviderId === null) {
+      setError('请先在「模型服务」页配置 Provider')
       return
     }
     setStarting(stageCode)
     setError('')
     try {
-      await startStage(id, stageCode, {
+      await startStage(validProjectId, stageCode, {
         mode,
         provider_id: selectedProviderId,
       })
-      await load()
+      await load({ force: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '启动阶段失败')
     } finally {
@@ -173,28 +226,33 @@ export default function ProjectWorkspacePage() {
 
   async function handleChatSubmit(event: FormEvent) {
     event.preventDefault()
-    if (!collectingRunId || !chatInput.trim()) {
+    if (!collectingRunId || !chatInput.trim() || chatSending) {
       return
     }
     const content = chatInput.trim()
-    setChatInput('')
     setChatSending(true)
     setError('')
+    // 临时 ID 使用负数，避免与后端真实 ID 冲突造成 React key 重复。
+    const tempId = -Date.now()
+    const userMessage: Message = {
+      id: tempId,
+      project_id: validProjectId ?? 0,
+      stage_run_id: collectingRunId,
+      role: 'user',
+      agent_code: null,
+      content,
+      created_at: new Date().toISOString(),
+    }
+    setMessages((prev) => [...prev, userMessage])
     try {
-      const userMessage: Message = {
-        id: Date.now(),
-        project_id: Number(projectId),
-        stage_run_id: collectingRunId,
-        role: 'user',
-        agent_code: null,
-        content,
-        created_at: new Date().toISOString(),
-      }
-      setMessages((prev) => [...prev, userMessage])
-      const reply = await sendChatMessage(collectingRunId, content)
-      setMessages((prev) => [...prev, reply])
+      await sendChatMessage(collectingRunId, content)
+      // 成功后再清空输入：失败时用户内容不丢失。
+      setChatInput('')
+      // 重新拉取以获得真实 ID 与助手回复，避免临时消息残留。
+      setMessages(await getStageRunMessages(collectingRunId))
     } catch (err) {
       setError(err instanceof Error ? err.message : '发送失败')
+      setMessages((prev) => prev.filter((item) => item.id !== tempId))
     } finally {
       setChatSending(false)
     }
@@ -208,7 +266,7 @@ export default function ProjectWorkspacePage() {
     setError('')
     try {
       await confirmRequirements(collectingRunId)
-      await load()
+      await load({ force: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '确认失败')
     } finally {
@@ -229,7 +287,7 @@ export default function ProjectWorkspacePage() {
         await rejectStageRun(awaitingRunId, reviewComment)
       }
       setReviewComment('')
-      await load()
+      await load({ force: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '评审失败')
     } finally {
@@ -237,7 +295,16 @@ export default function ProjectWorkspacePage() {
     }
   }
 
-  async function handleStartEdit(artifact: Artifact) {
+  function handleStartEdit(artifact: Artifact) {
+    // 存在未保存修改时先确认，避免切换文档静默丢稿。
+    if (editingArtifactId !== null && editingArtifactId !== artifact.id) {
+      const original = artifacts.find((item) => item.id === editingArtifactId)
+      if (original !== undefined && original.content_md !== editContent) {
+        if (!window.confirm('当前文档有未保存的修改，放弃并切换吗？')) {
+          return
+        }
+      }
+    }
     setSelectedArtifactId(artifact.id)
     setEditContent(artifact.content_md)
     setEditingArtifactId(artifact.id)
@@ -271,7 +338,8 @@ export default function ProjectWorkspacePage() {
       document.body.appendChild(link)
       link.click()
       link.remove()
-      URL.revokeObjectURL(url)
+      // 延迟释放：部分浏览器在 click 后仍需要 URL 才能完成下载。
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000)
     } catch (err) {
       setError(err instanceof Error ? err.message : '导出失败')
     } finally {
@@ -280,29 +348,29 @@ export default function ProjectWorkspacePage() {
   }
 
   async function handleViewCode(path: string) {
-    const id = Number(projectId)
-    if (!Number.isFinite(id)) {
+    if (validProjectId === null) {
       return
     }
     setSelectedCodePath(path)
     setError('')
     try {
-      setCodeContent(await getCodeFile(id, path))
+      setCodeContent(await getCodeFile(validProjectId, path))
     } catch (err) {
       setError(err instanceof Error ? err.message : '读取代码失败')
     }
   }
 
   async function handleRunCode(kind: 'run' | 'test') {
-    const id = Number(projectId)
-    if (!Number.isFinite(id)) {
+    if (validProjectId === null) {
       return
     }
     setCodeRunning(kind)
     setError('')
     try {
       const result: CodeRun =
-        kind === 'run' ? await runGeneratedCode(id) : await testGeneratedCode(id)
+        kind === 'run'
+          ? await runGeneratedCode(validProjectId)
+          : await testGeneratedCode(validProjectId)
       setCodeOutput(
         `${kind === 'run' ? '运行验证' : '测试运行'} ${result.ok ? '成功' : '失败'}\n${result.output}`,
       )
@@ -313,6 +381,9 @@ export default function ProjectWorkspacePage() {
     }
   }
 
+  // 未选择 Provider 时禁止启动阶段，避免以 null provider 发起请求。
+  const startDisabled = selectedProviderId === null
+
   const canStartAt = (index: number) => {
     if (!flow) {
       return false
@@ -321,6 +392,7 @@ export default function ProjectWorkspacePage() {
       return true
     }
     return flow.stages[index - 1].status === 'approved'
+      || flow.stages[index - 1].status === 'verification_failed'
   }
 
   const requirementsStage = flow?.stages[0]
@@ -330,8 +402,8 @@ export default function ProjectWorkspacePage() {
     (requirementsStage.status === 'pending' || requirementsStage.status === 'rejected')
 
   return (
-    <div className="flex min-h-full flex-col">
-      <div className="flex items-start justify-between">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-start justify-between">
         <div>
           <h1 className="text-lg font-semibold">项目 #{projectId}</h1>
           <p className="text-sm text-slate-500">
@@ -358,10 +430,10 @@ export default function ProjectWorkspacePage() {
         )}
       </div>
 
-      {error && <div className="mt-4 text-sm text-red-600">{error}</div>}
+      {error && <div className="mt-4 shrink-0 text-sm text-red-600">{error}</div>}
 
       {requirementsNeedsStart && (
-        <div className="mt-6 flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white p-12 text-center">
+        <div className="mt-6 flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white p-12 text-center">
           <h2 className="text-lg font-semibold">
             {requirementsStage?.status === 'rejected' ? '需求被打回，重新开始访谈' : '开始需求访谈'}
           </h2>
@@ -371,18 +443,21 @@ export default function ProjectWorkspacePage() {
           <div className="mt-6 flex gap-3">
             <button
               onClick={() => void handleStart('requirements', 'chat')}
-              disabled={starting === 'requirements'}
-              className="rounded-md bg-slate-900 px-5 py-2.5 text-sm text-white"
+              disabled={starting === 'requirements' || startDisabled}
+              className="rounded-md bg-slate-900 px-5 py-2.5 text-sm text-white disabled:opacity-50"
             >
               {starting === 'requirements' ? '启动中...' : '访谈模式'}
             </button>
             <button
               onClick={() => void handleStart('requirements', 'auto')}
-              disabled={starting === 'requirements'}
-              className="rounded-md border border-slate-300 px-5 py-2.5 text-sm text-slate-600"
+              disabled={starting === 'requirements' || startDisabled}
+              className="rounded-md border border-slate-300 px-5 py-2.5 text-sm text-slate-600 disabled:opacity-50"
             >
               自动生成
             </button>
+            {startDisabled && (
+              <p className="text-sm text-amber-600">请先在「模型服务」页配置 Provider</p>
+            )}
           </div>
         </div>
       )}
@@ -438,8 +513,8 @@ export default function ProjectWorkspacePage() {
               尚未生成代码文件，完成“编码骨架”阶段后自动写入项目目录。
             </p>
           ) : (
-            <div className="mt-3 grid grid-cols-3 gap-3">
-              <div className="max-h-96 overflow-auto rounded-md border border-slate-200">
+            <div className="mt-3 grid min-h-0 flex-1 grid-cols-3 gap-3">
+              <div className="min-h-0 overflow-auto rounded-md border border-slate-200">
                 {codeTree.files.map((file) => (
                   <button
                     key={file.path}
@@ -456,7 +531,7 @@ export default function ProjectWorkspacePage() {
               </div>
               <div className="col-span-2">
                 {selectedCodePath ? (
-                  <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                  <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
                     {codeContent}
                   </pre>
                 ) : (
@@ -468,7 +543,7 @@ export default function ProjectWorkspacePage() {
             </div>
           )}
           {codeOutput && (
-            <pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap rounded-md bg-slate-900 px-3 py-2 text-xs text-green-300">
+            <pre className="mt-3 max-h-72 shrink-0 overflow-auto whitespace-pre-wrap rounded-md bg-slate-900 px-3 py-2 text-xs text-green-300">
               {codeOutput}
             </pre>
           )}
@@ -482,7 +557,7 @@ export default function ProjectWorkspacePage() {
               <div className="mx-auto mb-2 h-8 w-8 rounded-full bg-slate-900 text-center leading-8 text-white">
                 {index + 1}
               </div>
-              <div className="font-medium">{stage.name}</div>
+              <div className="truncate font-medium" title={stage.description || stage.name}>{stage.name}</div>
               <div className="mt-1 text-xs text-slate-500">
                 {statusLabels[status] ?? status}
               </div>
@@ -497,8 +572,8 @@ export default function ProjectWorkspacePage() {
                   </button>
                   <button
                     onClick={() => void handleStart(stage.code, 'auto')}
-                    disabled={starting === stage.code}
-                    className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600"
+                    disabled={starting === stage.code || startDisabled}
+                    className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600 disabled:opacity-50"
                   >
                     自动生成
                   </button>
@@ -507,30 +582,30 @@ export default function ProjectWorkspacePage() {
               {status === 'pending' && canStartAt(index) && stage.code !== 'requirements' && (
                 <button
                   onClick={() => void handleStart(stage.code, 'auto')}
-                  disabled={starting === stage.code}
-                  className="mt-3 rounded-md bg-slate-900 px-3 py-1.5 text-xs text-white"
+                  disabled={starting === stage.code || startDisabled}
+                  className="mt-3 rounded-md bg-slate-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
                 >
                   {starting === stage.code ? '启动中...' : '开始本阶段'}
                 </button>
-              )}
-              {status === 'rejected' && (
+                )}
+                {(status === 'rejected' || status === 'verification_failed') && (
                 <button
-                  onClick={() => void handleStart(stage.code, 'auto')}
-                  disabled={starting === stage.code}
-                  className="mt-3 rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600"
+                onClick={() => void handleStart(stage.code, 'auto')}
+                disabled={starting === stage.code || startDisabled}
+                className="mt-3 rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600 disabled:opacity-50"
                 >
-                  重新生成
+                重新生成
                 </button>
-              )}
+                )}
             </div>
           ))}
         </div>
       )}
 
       {collectingRunId && tab === 'chat' && (
-        <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="font-medium">需求访谈</h2>
-          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-auto">
+        <div className="mt-6 flex min-h-0 flex-1 flex-col rounded-lg border border-slate-200 bg-white p-5">
+          <h2 className="shrink-0 font-medium">需求访谈</h2>
+          <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {messages.map((message) => (
               <div
                 key={message.id}
@@ -544,7 +619,7 @@ export default function ProjectWorkspacePage() {
               </div>
             ))}
           </div>
-          <form onSubmit={handleChatSubmit} className="mt-4 flex gap-2">
+          <form onSubmit={handleChatSubmit} className="mt-4 flex shrink-0 gap-2">
             <input
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
@@ -561,7 +636,7 @@ export default function ProjectWorkspacePage() {
           <button
             onClick={() => void handleConfirm()}
             disabled={confirming}
-            className="mt-3 rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700"
+            className="mt-3 shrink-0 self-start rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700"
           >
             {confirming ? '正在生成需求文档...' : '确认并生成需求文档'}
           </button>
@@ -569,7 +644,7 @@ export default function ProjectWorkspacePage() {
       )}
 
       {awaitingRunId && (tab === 'chat' || tab === 'stages') && (
-        <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-5">
+        <div className="mt-6 shrink-0 rounded-lg border border-amber-200 bg-amber-50 p-5">
           <h2 className="font-medium">阶段评审</h2>
           <textarea
             value={reviewComment}
@@ -686,8 +761,9 @@ export default function ProjectWorkspacePage() {
           <h2 className="font-medium">追溯矩阵</h2>
           {traceability.warnings.length > 0 && (
             <ul className="mt-3 space-y-1 text-sm text-amber-700">
-              {traceability.warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
+              {traceability.warnings.map((warning, index) => (
+                // 警告文本可能重复，使用索引作为 key 更安全。
+                <li key={index}>{warning}</li>
               ))}
             </ul>
           )}

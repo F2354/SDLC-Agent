@@ -9,6 +9,18 @@ from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 
+_CJK_FONT = "STSong-Light"
+_cjk_font_registered = False
+
+
+def _ensure_cjk_font() -> None:
+    """中文字体只需注册一次，避免重复注册开销。"""
+    global _cjk_font_registered
+    if not _cjk_font_registered:
+        pdfmetrics.registerFont(UnicodeCIDFont(_CJK_FONT))
+        _cjk_font_registered = True
+
+
 def artifact_to_docx(title: str, content: str) -> bytes:
     buffer = BytesIO()
     document = Document()
@@ -30,16 +42,19 @@ def artifact_to_docx(title: str, content: str) -> bytes:
         else:
             document.add_paragraph(line)
     document.save(buffer)
-    return buffer.getvalue()
+    try:
+        return buffer.getvalue()
+    finally:
+        buffer.close()
 
 
 def artifact_to_pdf(title: str, content: str) -> bytes:
-    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    _ensure_cjk_font()
     buffer = BytesIO()
     pdf = SimpleDocTemplate(buffer, pagesize=A4, title=title)
     styles = getSampleStyleSheet()
     for style_name in list(styles.byName):
-        styles[style_name].fontName = "STSong-Light"
+        styles[style_name].fontName = _CJK_FONT
 
     story = [Paragraph(escape(title), styles["Title"]), Spacer(1, 14)]
     for raw_line in content.splitlines():
@@ -59,4 +74,7 @@ def artifact_to_pdf(title: str, content: str) -> bytes:
         else:
             story.append(Paragraph(escape(line), styles["BodyText"]))
     pdf.build(story)
-    return buffer.getvalue()
+    try:
+        return buffer.getvalue()
+    finally:
+        buffer.close()

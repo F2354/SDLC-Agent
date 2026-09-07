@@ -22,6 +22,8 @@ export default function ProvidersPage() {
   const [modelsText, setModelsText] = useState('')
   const [testResults, setTestResults] = useState<Record<number, { ok: boolean; message: string }>>({})
   const [testingId, setTestingId] = useState<number | null>(null)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [saving, setSaving] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -41,7 +43,9 @@ export default function ProvidersPage() {
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault()
+    if (saving) return
     setError('')
+    setSaving(true)
     try {
       await createProvider({
         name,
@@ -56,6 +60,7 @@ export default function ProvidersPage() {
       })
       setCreating(false)
       setName('')
+      setType('openai_compatible')
       setBaseUrl('')
       setApiKey('')
       setDefaultModel('')
@@ -63,6 +68,8 @@ export default function ProvidersPage() {
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : '创建失败')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -81,13 +88,25 @@ export default function ProvidersPage() {
     }
   }
 
-  async function handleDelete(providerId: number) {
+  async function handleDelete(provider: Provider) {
+    if (!window.confirm(`确定删除 Provider「${provider.name}」吗？此操作不可撤销。`)) {
+      return
+    }
     setError('')
+    setDeletingId(provider.id)
     try {
-      await deleteProvider(providerId)
-      setProviders((prev) => prev.filter((item) => item.id !== providerId))
+      await deleteProvider(provider.id)
+      setProviders((prev) => prev.filter((item) => item.id !== provider.id))
+      // 清理该 Provider 的测试结果，避免残留状态被后续同 ID 记录误用。
+      setTestResults((prev) => {
+        const next = { ...prev }
+        delete next[provider.id]
+        return next
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除失败')
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -171,8 +190,12 @@ export default function ProvidersPage() {
             </label>
           </div>
           <div className="mt-5 flex gap-2">
-            <button className="rounded-md bg-slate-900 px-4 py-2 text-sm text-white">
-              保存
+            <button
+              type="submit"
+              disabled={saving}
+              className="rounded-md bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-50"
+            >
+              {saving ? '保存中...' : '保存'}
             </button>
             <button
               type="button"
@@ -213,10 +236,11 @@ export default function ProvidersPage() {
                   {testingId === provider.id ? '测试中...' : '测试连接'}
                 </button>
                 <button
-                  onClick={() => void handleDelete(provider.id)}
-                  className="rounded-md border border-red-200 px-3 py-1.5 text-sm text-red-600"
+                  onClick={() => void handleDelete(provider)}
+                  disabled={deletingId === provider.id}
+                  className="rounded-md border border-red-200 px-3 py-1.5 text-sm text-red-600 disabled:opacity-50"
                 >
-                  删除
+                  {deletingId === provider.id ? '删除中...' : '删除'}
                 </button>
               </div>
             </div>

@@ -1,18 +1,20 @@
 import json
-import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.config import settings
 from app.models.llm_provider import LLMProvider
 from app.services.code_service import (
+    _PACKAGE_NAME_RE,
     code_root,
     edit_code_file,
     list_code_files,
     project_python,
     read_code_file,
-    run_tests,
+    run_stage_tests,
     run_verify,
+    subprocess_env,
     write_code_file,
 )
 from app.services.llm_service import build_openai_client
@@ -77,7 +79,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_command",
-            "description": "在代码目录中运行命令，仅允许 python、pytest、pip。",
+            "description": (
+                "在代码目录中运行命令。仅允许 python <脚本>、pytest、"
+                "pip install/uninstall/list/show；禁止 python -c 与自定义 pip 源。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"command": {"type": "string"}},
@@ -104,19 +109,94 @@ class CodingResult:
     turn_count: int
 
 
+# 允许通过 `python -m` 执行的模块白名单。
+_ALLOWED_MODULES = {"pytest", "pip", "py_compile", "compileall"}
+
+# 允许传给 `python <script>` 的开关；其余一律拒绝（尤其是 -c/-m/-- 等可执行入口）。
+_ALLOWED_PYTHON_FLAGS = {"-B", "-O", "-OO", "-u", "-W", "-X"}
+
+
+def _reject(reason: str) -> dict:
+    return {"ok": False, "stdout": "", "stderr": reason}
+
+
+def _validate_pip_args(args: list[str]) -> str | None:
+    """校验 pip 参数：只允许安装/卸载白名单内的包名。"""
+    if not args:
+        return "pip 命令缺少参数"
+    if args[0] not in ("install", "uninstall", "list", "show"):
+        return "pip 只允许 install、uninstall、list、show 子命令"
+    for token in args[1:]:
+        if token.startswith("-"):
+            # 只允许少量安全开关，阻断 --index-url 等可劫持依赖源的参数。
+            if token not in ("--upgrade", "-U", "--quiet", "-q", "--no-input", "-y"):
+                return f"pip 参数不被允许：{token}"
+        elif not _PACKAGE_NAME_RE.match(token):
+            return f"pip 包名不合法：{token}"
+    if args[0] == "install" and not any(
+        not token.startswith("-") for token in args[1:]
+    ):
+        return "pip install 至少需要一个包名"
+    return None
+
+
+def _build_command(project_id: int, tokens: list[str]) -> tuple[list[str] | None, str | None]:
+    """把 Agent 给出的命令翻译成受控的 argv。返回 (命令, 错误信息)。"""
+    python = str(project_python(project_id))
+    program, args = tokens[0], tokens[1:]
+
+    if program == "pytest":
+        for token in args:
+            if token.startswith("-c"):
+                return None, "pytest 不允许通过 -c 加载外部配置"
+        return [python, "-m", "pytest", *args], None
+
+    if program == "pip" or (program == "python" and args and args[0] == "-m" and len(args) > 1 and args[1] == "pip"):
+        pip_args = args[2:] if program == "python" else args
+        error = _validate_pip_args(pip_args)
+        return (None, error) if error else ([python, "-m", "pip", *pip_args], None)
+
+    if program in ("python", "python3"):
+        # python -m <module>：模块必须在白名单内（或显式开启不安全模式）。
+        if args and args[0] == "-m":
+            module = args[1] if len(args) > 1 else ""
+            if module not in _ALLOWED_MODULES:
+                if not settings.allow_unsafe_commands:
+                    return None, f"python -m 仅允许模块：{sorted(_ALLOWED_MODULES)}"
+            return [python, "-m", module, *args[2:]], None
+
+        # python -c "..."：等价于任意代码执行，默认禁止。
+        if args and args[0] == "-c":
+            if not settings.allow_unsafe_commands:
+                return None, "python -c 已被禁用（等价于任意代码执行）"
+            return [python, "-c", *args[1:]], None
+
+        # python <script>：只允许运行工作区内的脚本文件，拒绝其它开关。
+        script = next((token for token in args if not token.startswith("-")), None)
+        if script is None:
+            return None, "python 命令缺少脚本路径"
+        for token in args:
+            if token.startswith("-") and token not in _ALLOWED_PYTHON_FLAGS:
+                return None, f"python 参数不被允许：{token}"
+        try:
+            target = (code_root(project_id) / script).resolve()
+            target.relative_to(code_root(project_id).resolve())
+        except (ValueError, OSError):
+            return None, f"脚本必须在代码工作区内：{script}"
+        if not target.is_file():
+            return None, f"脚本不存在：{script}"
+        return [python, *args], None
+
+    return None, "只允许 python、pytest、pip 命令"
+
+
 def _execute_command(project_id: int, command: str, timeout: int = 15) -> dict:
     tokens = command.strip().split()
     if not tokens:
-        return {"ok": False, "stdout": "", "stderr": "空命令"}
-    python = project_python(project_id)
-    if tokens[0] in ("python", "python3"):
-        cmd = [str(python), *tokens[1:]]
-    elif tokens[0] == "pytest":
-        cmd = [str(python), "-m", "pytest", *tokens[1:]]
-    elif tokens[0] == "pip":
-        cmd = [str(python), "-m", "pip", *tokens[1:]]
-    else:
-        return {"ok": False, "stdout": "", "stderr": "只允许 python、pytest、pip 命令"}
+        return _reject("空命令")
+    cmd, error = _build_command(project_id, tokens)
+    if error:
+        return _reject(error)
     try:
         result = subprocess.run(
             cmd,
@@ -124,7 +204,7 @@ def _execute_command(project_id: int, command: str, timeout: int = 15) -> dict:
             text=True,
             timeout=timeout,
             cwd=str(code_root(project_id)),
-            env={**os.environ, "PYTHONUTF8": "1"},
+            env=subprocess_env(project_id),
         )
         return {
             "ok": result.returncode == 0,
@@ -139,6 +219,8 @@ def _execute_command(project_id: int, command: str, timeout: int = 15) -> dict:
             "stderr": (exc.stderr or "")[:2000],
             "timed_out": True,
         }
+    except (OSError, ValueError) as exc:
+        return _reject(f"命令执行失败：{exc}")
 
 
 def execute_tool(project_id: int, name: str, args: dict) -> dict:
@@ -162,7 +244,7 @@ def execute_tool(project_id: int, name: str, args: dict) -> dict:
         if name == "run_command":
             return _execute_command(project_id, args["command"])
         if name == "run_tests":
-            result = run_tests(project_id)
+            result = run_stage_tests(project_id)
             return {"ok": result.ok, "phase": result.phase, "output": result.output[:2000]}
         return {"ok": False, "error": f"未知工具: {name}"}
     except Exception as exc:
@@ -172,7 +254,7 @@ def execute_tool(project_id: int, name: str, args: dict) -> dict:
 def _tests_passed(test_result) -> bool:
     if test_result is None:
         return False
-    return test_result.ok or test_result.phase == "missing"
+    return test_result.ok
 
 
 def run_coding_harness(
@@ -247,7 +329,7 @@ def run_coding_harness(
                     }
                 )
             verify = run_verify(project_id)
-            tests = run_tests(project_id)
+            tests = run_stage_tests(project_id)
             if verify.ok and _tests_passed(tests):
                 return CodingResult(ok=True, verify=verify, tests=tests, turn_count=turn + 1)
             messages.append(
@@ -263,7 +345,7 @@ def run_coding_harness(
             if message.content:
                 messages.append({"role": "assistant", "content": message.content})
             verify = run_verify(project_id)
-            tests = run_tests(project_id)
+            tests = run_stage_tests(project_id)
             if verify.ok and _tests_passed(tests):
                 return CodingResult(ok=True, verify=verify, tests=tests, turn_count=turn + 1)
             if turn < max_turns - 1:

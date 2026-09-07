@@ -41,6 +41,9 @@ def get_code_file(
         content = read_code_file(project_id, path)
     except FileNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    except ValueError:
+        # _safe_path 拒绝工作区外的路径（路径穿越）
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件路径不合法")
     return Response(content=content, media_type="text/plain; charset=utf-8")
 
 

@@ -14,9 +14,17 @@ from app.schemas.provider import (
     ProviderUpdate,
 )
 from app.services.crypto import decrypt_secret, encrypt_secret, mask_secret
-from app.services.llm_service import test_provider_connection
+from app.services.llm_service import ProviderUrlError, test_provider_connection, validate_base_url
 
 router = APIRouter(prefix="/providers", tags=["providers"])
+
+
+def _assert_base_url_allowed(base_url: str) -> None:
+    """校验 base_url，非法时抛出 400。"""
+    try:
+        validate_base_url(base_url)
+    except ProviderUrlError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 def get_owned_provider(provider_id: int, user: User, db: Session) -> LLMProvider:
@@ -84,6 +92,7 @@ def create_provider(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _assert_base_url_allowed(payload.base_url)
     provider = LLMProvider(
         user_id=user.id,
         name=payload.name,
@@ -124,6 +133,7 @@ def update_provider(
     if payload.type is not None:
         provider.type = payload.type
     if payload.base_url is not None:
+        _assert_base_url_allowed(payload.base_url)
         provider.base_url = payload.base_url
     if payload.api_key is not None:
         provider.api_key_enc = encrypt_secret(payload.api_key) if payload.api_key else None
