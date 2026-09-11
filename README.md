@@ -123,7 +123,13 @@ SDLC-Agent/
 
 ## 快速开始
 
-本项目为本地单机运行，所有数据（数据库、生成的代码）都写在仓库内的 `backend/data/`。
+本地单机运行。每个项目在**创建时指定的本地文件夹**内自包含产出：
+
+- 代码与测试：`{folder}/code`、`{folder}/tests`
+- 阶段文档（需求、设计、测试等）：`{folder}/docs/*.md`
+- 虚拟环境：`{folder}/.venv`
+
+平台级数据（用户、模型 Provider、项目索引）保存在仓库 `backend/data/sdlc.db`。
 
 ### 环境要求
 
@@ -144,6 +150,23 @@ SDLC-Agent/
 - 前端 http://127.0.0.1:5173
 
 > 首次运行前请先完成下面的「首次安装」，否则会因缺少依赖而启动失败。
+
+### 停止服务
+
+`dev.ps1` 以后台隐藏进程启动，停止方式取决于运行位置：
+
+- **在启动它的终端**：直接按 `Ctrl+C`。
+- **仅关闭后端（8000）**：
+  ```powershell
+  $id = (Get-NetTCPConnection -LocalPort 8000 -ErrorAction SilentlyContinue).OwningProcess
+  if ($id) { Stop-Process -Id $id -Force }
+  ```
+- **仅关闭前端（5173）**：
+  ```powershell
+  $id = (Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue).OwningProcess
+  if ($id) { Stop-Process -Id $id -Force }
+  ```
+- 若后端运行于 WSL / Docker 容器内，请在其对应环境执行 `pkill -f uvicorn` 或 `docker stop <容器>`。
 
 ### 首次安装
 

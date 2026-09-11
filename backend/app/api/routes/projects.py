@@ -79,15 +79,18 @@ def create_project(
     if model is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不支持的过程模型")
 
-    folder: str | None = None
-    if payload.folder:
-        folder_path = Path(payload.folder)
-        if not folder_path.is_absolute() or not folder_path.is_dir():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="项目文件夹必须是本机上已存在的绝对路径",
-            )
-        folder = str(folder_path)
+    if not payload.folder:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请选择项目文件夹：代码与文档将生成在该文件夹内",
+        )
+    folder_path = Path(payload.folder)
+    if not folder_path.is_absolute() or not folder_path.is_dir():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="项目文件夹必须是本机上已存在的绝对路径",
+        )
+    folder = str(folder_path.resolve())
 
     project = Project(
         owner_id=user.id,

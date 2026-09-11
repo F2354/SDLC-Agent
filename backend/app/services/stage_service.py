@@ -30,6 +30,7 @@ from app.services.code_service import (
     write_files,
 )
 from app.services.coding_agent import run_coding_harness
+from app.services.artifact_file import write_artifact_file
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -133,6 +134,10 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):
             )
         )
         db.commit()
+        try:
+            write_artifact_file(current["project_id"], artifact)
+        except Exception:  # noqa: BLE001
+            logger.exception("文档产物写文件失败")
         return current
 
     graph = StateGraph(AgentState)
@@ -265,6 +270,10 @@ def execute_code_stage(
         )
     )
     db.commit()
+    try:
+        write_artifact_file(project.id, artifact)
+    except Exception:  # noqa: BLE001
+        logger.exception("文档产物写文件失败")
 
 
 def execute_coding_harness_stage(
@@ -345,6 +354,10 @@ def execute_coding_harness_stage(
         )
     )
     db.commit()
+    try:
+        write_artifact_file(project.id, artifact)
+    except Exception:  # noqa: BLE001
+        logger.exception("文档产物写文件失败")
 
 
 def _friendly_stage_error(exc: Exception, model_name: str | None) -> str:

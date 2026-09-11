@@ -1,8 +1,11 @@
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger("uvicorn.error")
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
@@ -10,6 +13,7 @@ from app.models.project import Project
 from app.models.stage_run import Artifact, ArtifactVersion
 from app.models.user import User
 from app.schemas.stage import ArtifactOut, ArtifactUpdate
+from app.services.artifact_file import write_artifact_file
 from app.services.export import artifact_to_docx, artifact_to_pdf
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -46,6 +50,10 @@ def update_artifact(
     )
     db.commit()
     db.refresh(artifact)
+    try:
+        write_artifact_file(artifact.project_id, artifact)
+    except Exception:  # noqa: BLE001
+        logger.exception("文档产物写文件失败")
     return artifact
 
 
