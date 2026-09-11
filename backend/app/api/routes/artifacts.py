@@ -15,6 +15,7 @@ from app.models.user import User
 from app.schemas.stage import ArtifactOut, ArtifactUpdate
 from app.services.artifact_file import write_artifact_file
 from app.services.export import artifact_to_docx, artifact_to_pdf
+from app.services.traceability import rebuild_traceability
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
@@ -50,6 +51,11 @@ def update_artifact(
     )
     db.commit()
     db.refresh(artifact)
+    try:
+        rebuild_traceability(db, artifact.project_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("重建追溯关系失败")
+        db.rollback()
     try:
         write_artifact_file(artifact.project_id, artifact)
     except Exception:  # noqa: BLE001

@@ -3,7 +3,7 @@ import { useSearchParams, useParams } from 'react-router-dom'
 
 import {
   approveStageRun,
-  confirmRequirements,
+  confirmStage,
   exportArtifact,
   getCodeFile,
   getCodeTree,
@@ -14,12 +14,15 @@ import {
   listActivityEvents,
   listProjectArtifacts,
   listProviders,
+  listStageRunReviews,
+  projectEventsUrl,
   rejectStageRun,
   runGeneratedCode,
   sendChatMessage,
   startStage,
   testGeneratedCode,
   updateArtifact,
+  updateProject,
   type ActivityEvent,
   type Artifact,
   type CodeRun,
@@ -28,11 +31,12 @@ import {
   type ProjectStats,
   type ProjectFlow,
   type Provider,
+  type Review,
   type Traceability,
 } from '../lib/api'
 
 const statusLabels: Record<string, string> = {
-  collecting: '需求访谈中',
+  collecting: '对话中',
   generating: '生成中',
   awaiting_review: '待评审',
   pending: '未开始',
@@ -42,6 +46,29 @@ const statusLabels: Record<string, string> = {
   failed: '失败',
   verification_failed: '验证未通过',
 }
+
+// 需要真实写盘并运行验证的阶段：只能使用自动模式。
+const CODE_STAGES = new Set([
+  'coding',
+  'testing',
+  'unit-test',
+  'integration-test',
+  'system-test',
+  'prototype',
+  'sprint-dev',
+])
+
+// 触发项目数据刷新的 SSE 事件。
+const REFRESH_EVENTS = [
+  'stage_status',
+  'agent_started',
+  'artifact_saved',
+  'review_opened',
+  'review_result',
+  'review_suggested',
+  'stage_completed',
+  'error',
+]
 
 function cardClass(status: string) {
   const base = 'rounded-lg border bg-white p-4 text-center text-sm transition-all duration-300'
@@ -95,9 +122,16 @@ export default function ProjectWorkspacePage() {
   const [confirming, setConfirming] = useState(false)
   const [reviewComment, setReviewComment] = useState('')
   const [reviewingId, setReviewingId] = useState<number | null>(null)
+  const [reviews, setReviews] = useState<Review[]>([])
+  const [autoAdvance, setAutoAdvance] = useState(false)
+  const [savingAutoAdvance, setSavingAutoAdvance] = useState(false)
+  // SSE 实时状态：已连接时不再轮询；message_delta 用于逐段渲染 agent 回复。
+  const [liveConnected, setLiveConnected] = useState(false)
+  const [streamingText, setStreamingText] = useState('')
 
   const loadingRef = useRef(false)
   const mountedRef = useRef(true)
+  const reloadTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
     mountedRef.current = true
@@ -149,16 +183,68 @@ export default function ProjectWorkspacePage() {
     [validProjectId],
   )
 
-  const hasActiveStages = flow?.stages.some(({ status }) =>
-    status === 'generating' || status === 'collecting',
-  ) ?? false
+  const hasActiveStages =
+    flow?.stages.some(({ status }) => status === 'generating' || status === 'collecting') ??
+    false
 
   useEffect(() => {
     void load({ force: true })
+  }, [load])
+
+  // SSE 断开或服务端不可用时，退化为轮询兜底。
+  useEffect(() => {
+    if (liveConnected) return
     if (!hasActiveStages) return
     const timer = window.setInterval(() => void load(), 3000)
     return () => window.clearInterval(timer)
-  }, [hasActiveStages, load])
+  }, [hasActiveStages, liveConnected, load])
+
+  // 项目事件流订阅。
+  useEffect(() => {
+    if (validProjectId === null) return
+    let source: EventSource
+    try {
+      source = new EventSource(projectEventsUrl(validProjectId))
+    } catch {
+      return
+    }
+
+    const scheduleReload = () => {
+      if (reloadTimerRef.current !== null) return
+      reloadTimerRef.current = window.setTimeout(() => {
+        reloadTimerRef.current = null
+        void load()
+      }, 300)
+    }
+
+    source.onopen = () => {
+      if (mountedRef.current) setLiveConnected(true)
+    }
+    source.onerror = () => {
+      if (mountedRef.current) setLiveConnected(false)
+    }
+    source.addEventListener('message_delta', (event) => {
+      const data = JSON.parse((event as MessageEvent).data) as { content: string }
+      if (mountedRef.current) setStreamingText((prev) => prev + data.content)
+    })
+    source.addEventListener('message', () => {
+      if (!mountedRef.current) return
+      setStreamingText('')
+      scheduleReload()
+    })
+    for (const name of REFRESH_EVENTS) {
+      source.addEventListener(name, scheduleReload)
+    }
+
+    return () => {
+      source.close()
+      if (reloadTimerRef.current !== null) {
+        window.clearTimeout(reloadTimerRef.current)
+        reloadTimerRef.current = null
+      }
+      setLiveConnected(false)
+    }
+  }, [validProjectId, load])
 
   useEffect(() => {
     listProviders()
@@ -173,16 +259,27 @@ export default function ProjectWorkspacePage() {
       })
   }, [])
 
-  const collectingRunId =
-    flow?.stages.find(({ status, stage_run_id }) => status === 'collecting' && !!stage_run_id)
-      ?.stage_run_id ?? null
-  const awaitingRunId =
-    flow?.stages.find(({ status, stage_run_id }) => (status === 'awaiting_review' || status === 'verification_failed') && !!stage_run_id)
-      ?.stage_run_id ?? null
+  // 自动推进开关跟随项目数据同步。
+  useEffect(() => {
+    if (flow) {
+      setAutoAdvance(flow.auto_advance ?? false)
+    }
+  }, [flow])
+
+  const collectingStage = flow?.stages.find(
+    ({ status, stage_run_id }) => status === 'collecting' && !!stage_run_id,
+  )
+  const collectingRunId = collectingStage?.stage_run_id ?? null
+  const awaitingStage = flow?.stages.find(
+    ({ status, stage_run_id }) =>
+      (status === 'awaiting_review' || status === 'verification_failed') && !!stage_run_id,
+  )
+  const awaitingRunId = awaitingStage?.stage_run_id ?? null
 
   useEffect(() => {
     if (!collectingRunId) {
       setMessages([])
+      setStreamingText('')
       return
     }
     // 竞态保护：只接受最后一次请求的结果。
@@ -200,6 +297,24 @@ export default function ProjectWorkspacePage() {
       stale = true
     }
   }, [collectingRunId])
+
+  // 评审记录（含评审 Agent 自动建议），随阶段流转刷新。
+  useEffect(() => {
+    if (!awaitingRunId) {
+      setReviews([])
+      return
+    }
+    let stale = false
+    listStageRunReviews(awaitingRunId)
+      .then((list) => {
+        if (stale || !mountedRef.current) return
+        setReviews(list)
+      })
+      .catch(() => undefined)
+    return () => {
+      stale = true
+    }
+  }, [awaitingRunId, activityEvents.length])
 
   async function handleStart(stageCode: string, mode: 'auto' | 'chat' = 'auto') {
     if (validProjectId === null) {
@@ -232,6 +347,7 @@ export default function ProjectWorkspacePage() {
     const content = chatInput.trim()
     setChatSending(true)
     setError('')
+    setStreamingText('')
     // 临时 ID 使用负数，避免与后端真实 ID 冲突造成 React key 重复。
     const tempId = -Date.now()
     const userMessage: Message = {
@@ -248,6 +364,7 @@ export default function ProjectWorkspacePage() {
       await sendChatMessage(collectingRunId, content)
       // 成功后再清空输入：失败时用户内容不丢失。
       setChatInput('')
+      setStreamingText('')
       // 重新拉取以获得真实 ID 与助手回复，避免临时消息残留。
       setMessages(await getStageRunMessages(collectingRunId))
     } catch (err) {
@@ -265,7 +382,7 @@ export default function ProjectWorkspacePage() {
     setConfirming(true)
     setError('')
     try {
-      await confirmRequirements(collectingRunId)
+      await confirmStage(collectingRunId)
       await load({ force: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '确认失败')
@@ -295,6 +412,23 @@ export default function ProjectWorkspacePage() {
     }
   }
 
+  async function handleToggleAutoAdvance() {
+    if (validProjectId === null || savingAutoAdvance) {
+      return
+    }
+    const next = !autoAdvance
+    setAutoAdvance(next)
+    setSavingAutoAdvance(true)
+    try {
+      await updateProject(validProjectId, { auto_advance: next })
+    } catch (err) {
+      setAutoAdvance(!next)
+      setError(err instanceof Error ? err.message : '切换自动推进失败')
+    } finally {
+      setSavingAutoAdvance(false)
+    }
+  }
+
   function handleStartEdit(artifact: Artifact) {
     // 存在未保存修改时先确认，避免切换文档静默丢稿。
     if (editingArtifactId !== null && editingArtifactId !== artifact.id) {
@@ -320,6 +454,7 @@ export default function ProjectWorkspacePage() {
       setArtifacts((prev) => prev.map((item) => (item.id === updated.id ? updated : item)))
       setEditingArtifactId(null)
       setSelectedArtifactId(updated.id)
+      await load({ force: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : '保存修订失败')
     }
@@ -392,65 +527,89 @@ export default function ProjectWorkspacePage() {
       return true
     }
     return flow.stages[index - 1].status === 'approved'
-      || flow.stages[index - 1].status === 'verification_failed'
   }
 
-  const requirementsStage = flow?.stages[0]
-  const requirementsNeedsStart =
+  const firstStage = flow?.stages[0]
+  const firstStageNeedsStart =
     tab === 'chat' &&
-    requirementsStage !== undefined &&
-    (requirementsStage.status === 'pending' || requirementsStage.status === 'rejected')
+    firstStage !== undefined &&
+    (firstStage.status === 'pending' || firstStage.status === 'rejected') &&
+    canStartAt(0)
+
+  const agentReviews = reviews.filter((review) => review.reviewer_type === 'agent')
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-start justify-between">
+      <div className="flex shrink-0 items-start justify-between gap-4">
         <div>
-          <h1 className="text-lg font-semibold">项目 #{projectId}</h1>
+          <h1 className="text-lg font-semibold">
+            项目 #{projectId}
+            <span
+              className={`ml-3 align-middle text-xs font-normal ${
+                liveConnected ? 'text-green-600' : 'text-slate-400'
+              }`}
+            >
+              {liveConnected ? '实时连接' : '轮询模式'}
+            </span>
+          </h1>
           <p className="text-sm text-slate-500">
             {flow ? `${flow.process_model.name}工作台` : '加载中...'}
           </p>
         </div>
-        {providers.length > 0 && (
-          <label className="text-sm text-slate-500">
-            模型服务
-            <select
-              value={selectedProviderId ?? ''}
-              onChange={(event) =>
-                setSelectedProviderId(event.target.value ? Number(event.target.value) : null)
-              }
-              className="ml-2 rounded-md border border-slate-300 px-3 py-1.5"
-            >
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name} · {provider.default_model || '未设默认模型'}
-                </option>
-              ))}
-            </select>
+        <div className="flex shrink-0 items-center gap-4">
+          <label className="flex items-center gap-2 text-sm text-slate-500">
+            <input
+              type="checkbox"
+              checked={autoAdvance}
+              disabled={savingAutoAdvance}
+              onChange={() => void handleToggleAutoAdvance()}
+            />
+            统筹自动推进
           </label>
-        )}
+          {providers.length > 0 && (
+            <label className="text-sm text-slate-500">
+              模型服务
+              <select
+                value={selectedProviderId ?? ''}
+                onChange={(event) =>
+                  setSelectedProviderId(event.target.value ? Number(event.target.value) : null)
+                }
+                className="ml-2 rounded-md border border-slate-300 px-3 py-1.5"
+              >
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>
+                    {provider.name} · {provider.default_model || '未设默认模型'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
       </div>
 
       {error && <div className="mt-4 shrink-0 text-sm text-red-600">{error}</div>}
 
-      {requirementsNeedsStart && (
+      {firstStageNeedsStart && (
         <div className="mt-6 flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white p-12 text-center">
           <h2 className="text-lg font-semibold">
-            {requirementsStage?.status === 'rejected' ? '需求被打回，重新开始访谈' : '开始需求访谈'}
+            {firstStage?.status === 'rejected'
+              ? '首阶段被打回，重新开始'
+              : `开始「${firstStage?.stage.name ?? ''}」`}
           </h2>
           <p className="mt-2 max-w-md text-sm leading-6 text-slate-500">
-            需求分析师 Agent 将通过对话收集项目需求，确认后生成需求规格说明书。
+            对应角色 Agent 将通过对话与你确认本阶段内容，确认后生成正式文档。
           </p>
           <div className="mt-6 flex gap-3">
             <button
-              onClick={() => void handleStart('requirements', 'chat')}
-              disabled={starting === 'requirements' || startDisabled}
+              onClick={() => void handleStart(firstStage?.stage.code ?? '', 'chat')}
+              disabled={starting !== null || startDisabled}
               className="rounded-md bg-slate-900 px-5 py-2.5 text-sm text-white disabled:opacity-50"
             >
-              {starting === 'requirements' ? '启动中...' : '访谈模式'}
+              {starting ? '启动中...' : '对话模式'}
             </button>
             <button
-              onClick={() => void handleStart('requirements', 'auto')}
-              disabled={starting === 'requirements' || startDisabled}
+              onClick={() => void handleStart(firstStage?.stage.code ?? '', 'auto')}
+              disabled={starting !== null || startDisabled}
               className="rounded-md border border-slate-300 px-5 py-2.5 text-sm text-slate-600 disabled:opacity-50"
             >
               自动生成
@@ -479,10 +638,8 @@ export default function ProjectWorkspacePage() {
             </div>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-4">
-            <div className="text-xs text-slate-500">追溯条目</div>
-            <div className="mt-1 text-lg font-semibold">
-              {Object.values(stats.entity_counts).reduce((sum, value) => sum + value, 0)}
-            </div>
+            <div className="text-xs text-slate-500">追溯关系</div>
+            <div className="mt-1 text-lg font-semibold">{traceability?.links.length ?? 0}</div>
           </div>
         </div>
       )}
@@ -510,7 +667,7 @@ export default function ProjectWorkspacePage() {
           </div>
           {!codeTree.exists ? (
             <p className="mt-3 text-sm text-slate-500">
-              尚未生成代码文件，完成“编码骨架”阶段后自动写入项目目录。
+              尚未生成代码文件，完成编码类阶段后自动写入项目目录。
             </p>
           ) : (
             <div className="mt-3 grid min-h-0 flex-1 grid-cols-3 gap-3">
@@ -551,25 +708,29 @@ export default function ProjectWorkspacePage() {
       )}
 
       {flow && tab === 'stages' && (
-        <div className="mt-6 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(170px,1fr))]">
+        <div className="mt-6 grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(190px,1fr))]">
           {flow.stages.map(({ stage, status }, index) => (
             <div key={stage.code} className={cardClass(status)}>
               <div className="mx-auto mb-2 h-8 w-8 rounded-full bg-slate-900 text-center leading-8 text-white">
                 {index + 1}
               </div>
-              <div className="truncate font-medium" title={stage.description || stage.name}>{stage.name}</div>
+              <div className="truncate font-medium" title={stage.description || stage.name}>
+                {stage.name}
+              </div>
               <div className="mt-1 text-xs text-slate-500">
                 {statusLabels[status] ?? status}
               </div>
-              {status === 'pending' && canStartAt(index) && stage.code === 'requirements' && (
+              {status === 'pending' && canStartAt(index) && (
                 <div className="mt-3 flex flex-col gap-2">
-                  <button
-                    onClick={() => void handleStart(stage.code, 'chat')}
-                    disabled={starting === stage.code}
-                    className="rounded-md bg-slate-900 px-3 py-1.5 text-xs text-white"
-                  >
-                    {starting === stage.code ? '启动中...' : '访谈模式'}
-                  </button>
+                  {!CODE_STAGES.has(stage.code) && (
+                    <button
+                      onClick={() => void handleStart(stage.code, 'chat')}
+                      disabled={starting === stage.code || startDisabled}
+                      className="rounded-md bg-slate-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                    >
+                      {starting === stage.code ? '启动中...' : '对话模式'}
+                    </button>
+                  )}
                   <button
                     onClick={() => void handleStart(stage.code, 'auto')}
                     disabled={starting === stage.code || startDisabled}
@@ -579,24 +740,15 @@ export default function ProjectWorkspacePage() {
                   </button>
                 </div>
               )}
-              {status === 'pending' && canStartAt(index) && stage.code !== 'requirements' && (
+              {(status === 'rejected' || status === 'verification_failed') && (
                 <button
                   onClick={() => void handleStart(stage.code, 'auto')}
                   disabled={starting === stage.code || startDisabled}
-                  className="mt-3 rounded-md bg-slate-900 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                  className="mt-3 rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600 disabled:opacity-50"
                 >
-                  {starting === stage.code ? '启动中...' : '开始本阶段'}
+                  重新生成
                 </button>
-                )}
-                {(status === 'rejected' || status === 'verification_failed') && (
-                <button
-                onClick={() => void handleStart(stage.code, 'auto')}
-                disabled={starting === stage.code || startDisabled}
-                className="mt-3 rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600 disabled:opacity-50"
-                >
-                重新生成
-                </button>
-                )}
+              )}
             </div>
           ))}
         </div>
@@ -604,12 +756,14 @@ export default function ProjectWorkspacePage() {
 
       {collectingRunId && tab === 'chat' && (
         <div className="mt-6 flex min-h-0 flex-1 flex-col rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="shrink-0 font-medium">需求访谈</h2>
+          <h2 className="shrink-0 font-medium">
+            {collectingStage?.stage.name ?? ''} · 阶段对话
+          </h2>
           <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
             {messages.map((message) => (
               <div
                 key={message.id}
-                className={`max-w-[80%] rounded-md px-3 py-2 text-sm ${
+                className={`max-w-[80%] rounded-md px-3 py-2 text-sm whitespace-pre-wrap ${
                   message.role === 'user'
                     ? 'ml-auto bg-slate-900 text-white'
                     : 'bg-slate-100 text-slate-800'
@@ -618,17 +772,23 @@ export default function ProjectWorkspacePage() {
                 {message.content}
               </div>
             ))}
+            {streamingText && (
+              <div className="max-w-[80%] rounded-md bg-slate-100 px-3 py-2 text-sm whitespace-pre-wrap text-slate-800">
+                {streamingText}
+                <span className="ml-0.5 animate-pulse">▍</span>
+              </div>
+            )}
           </div>
           <form onSubmit={handleChatSubmit} className="mt-4 flex shrink-0 gap-2">
             <input
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
-              placeholder="补充项目需求..."
+              placeholder="补充本阶段信息..."
               className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm"
             />
             <button
               disabled={chatSending || !chatInput.trim()}
-              className="rounded-md bg-slate-900 px-4 py-2 text-sm text-white"
+              className="rounded-md bg-slate-900 px-4 py-2 text-sm text-white disabled:opacity-50"
             >
               发送
             </button>
@@ -638,14 +798,38 @@ export default function ProjectWorkspacePage() {
             disabled={confirming}
             className="mt-3 shrink-0 self-start rounded-md border border-slate-300 px-4 py-2 text-sm text-slate-700"
           >
-            {confirming ? '正在生成需求文档...' : '确认并生成需求文档'}
+            {confirming ? '正在生成阶段文档...' : '确认并生成阶段文档'}
           </button>
         </div>
       )}
 
       {awaitingRunId && (tab === 'chat' || tab === 'stages') && (
         <div className="mt-6 shrink-0 rounded-lg border border-amber-200 bg-amber-50 p-5">
-          <h2 className="font-medium">阶段评审</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="font-medium">
+              {awaitingStage?.stage.name ?? ''} · 阶段评审
+            </h2>
+            <span className="text-xs text-slate-500">
+              产物已生成，通过后进入下一阶段
+            </span>
+          </div>
+
+          {agentReviews.length > 0 && (
+            <div className="mt-3 rounded-md border border-slate-200 bg-white p-3">
+              <div className="text-xs font-medium text-slate-500">
+                评审 Agent 建议（自动生成，仅供参考）
+              </div>
+              {agentReviews.map((review) => (
+                <pre
+                  key={review.id}
+                  className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs leading-5 text-slate-700"
+                >
+                  {review.comment}
+                </pre>
+              ))}
+            </div>
+          )}
+
           <textarea
             value={reviewComment}
             onChange={(event) => setReviewComment(event.target.value)}
@@ -656,20 +840,22 @@ export default function ProjectWorkspacePage() {
             <button
               onClick={() => void handleReview('approved')}
               disabled={reviewingId === awaitingRunId}
-              className="rounded-md bg-green-700 px-4 py-2 text-sm text-white"
+              className="rounded-md bg-green-700 px-4 py-2 text-sm text-white disabled:opacity-50"
             >
               通过
             </button>
             <button
               onClick={() => void handleReview('rejected')}
               disabled={reviewingId === awaitingRunId}
-              className="rounded-md bg-red-600 px-4 py-2 text-sm text-white"
+              className="rounded-md bg-red-600 px-4 py-2 text-sm text-white disabled:opacity-50"
             >
               打回
             </button>
           </div>
           <p className="mt-2 text-xs text-slate-500">
-            打回后可在阶段卡片上点击“重新生成”。
+            {autoAdvance
+              ? '已开启统筹自动推进：通过后将自动启动下一阶段。'
+              : '通过后可在阶段卡片上点击「自动生成」启动下一阶段；打回后可「重新生成」。'}
           </p>
         </div>
       )}
@@ -759,6 +945,28 @@ export default function ProjectWorkspacePage() {
       {traceability && tab === 'artifacts' && (
         <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
           <h2 className="font-medium">追溯矩阵</h2>
+
+          <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+            <div className="rounded-md bg-slate-50 p-3">
+              <div className="text-xs text-slate-500">需求 → 用例</div>
+              <div className="mt-1 font-semibold">
+                {traceability.coverage.rq_with_uc}/{traceability.coverage.rq_total}
+              </div>
+            </div>
+            <div className="rounded-md bg-slate-50 p-3">
+              <div className="text-xs text-slate-500">需求 → 模块</div>
+              <div className="mt-1 font-semibold">
+                {traceability.coverage.rq_with_mod}/{traceability.coverage.rq_total}
+              </div>
+            </div>
+            <div className="rounded-md bg-slate-50 p-3">
+              <div className="text-xs text-slate-500">模块 → 测试用例</div>
+              <div className="mt-1 font-semibold">
+                {traceability.coverage.mod_with_tc}/{traceability.coverage.mod_total}
+              </div>
+            </div>
+          </div>
+
           {traceability.warnings.length > 0 && (
             <ul className="mt-3 space-y-1 text-sm text-amber-700">
               {traceability.warnings.map((warning, index) => (
@@ -767,6 +975,39 @@ export default function ProjectWorkspacePage() {
               ))}
             </ul>
           )}
+
+          {traceability.links.length > 0 && (
+            <details className="mt-3">
+              <summary className="cursor-pointer text-sm text-slate-600">
+                查看全部追溯关系（{traceability.links.length} 条）
+              </summary>
+              <div className="mt-2 max-h-64 overflow-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-400">
+                      <th className="py-1.5 pr-4">来源</th>
+                      <th className="py-1.5 pr-4">关系</th>
+                      <th className="py-1.5">目标</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {traceability.links.map((link, index) => (
+                      <tr key={index} className="border-b border-slate-100">
+                        <td className="py-1.5 pr-4">
+                          {link.from_type} {link.from_key}
+                        </td>
+                        <td className="py-1.5 pr-4 text-slate-500">{link.relation}</td>
+                        <td className="py-1.5">
+                          {link.to_type} {link.to_key}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+
           {traceability.rows.length === 0 ? (
             <p className="mt-3 text-sm text-slate-500">暂无产物可追溯。</p>
           ) : (

@@ -165,15 +165,26 @@ def test_requirements_empty_returns_none(tmp_path):
 # ---------- 级联删除 ----------
 
 
-def test_delete_project_cascades_child_rows(client):
+def test_delete_project_cascades_child_rows(client, project_folder):
     from app.db.session import SessionLocal
-    from app.models.stage_run import ActivityEvent, Artifact, Message, StageRun
+    from app.models.stage_run import (
+        ActivityEvent,
+        Artifact,
+        Message,
+        StageRun,
+        TraceabilityLink,
+    )
 
     headers = register(client)
     created = client.post(
         "/api/projects",
         headers=headers,
-        json={"name": unique_name("cascade"), "description": "", "process_model_code": "waterfall"},
+        json={
+            "name": unique_name("cascade"),
+            "description": "",
+            "process_model_code": "waterfall",
+            "folder": project_folder,
+        },
     )
     assert created.status_code == 201
     project_id = created.json()["id"]
@@ -187,6 +198,16 @@ def test_delete_project_cascades_child_rows(client):
         db.add(
             ActivityEvent(
                 project_id=project_id, stage_run_id=run.id, event_type="test", message="m"
+            )
+        )
+        db.add(
+            TraceabilityLink(
+                project_id=project_id,
+                from_type="RQ",
+                from_key="RQ-001",
+                to_type="TC",
+                to_key="TC-001",
+                relation="verifies",
             )
         )
         db.commit()
@@ -206,4 +227,9 @@ def test_delete_project_cascades_child_rows(client):
             __import__("sqlalchemy")
             .select(ActivityEvent)
             .where(ActivityEvent.project_id == project_id)
+        ) is None
+        assert db.scalar(
+            __import__("sqlalchemy")
+            .select(TraceabilityLink)
+            .where(TraceabilityLink.project_id == project_id)
         ) is None

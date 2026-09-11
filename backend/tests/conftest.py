@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,3 +24,11 @@ def _cleanup_tmp_dir():
 def client():
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def project_folder():
+    """项目创建时必填的本地文件夹：提供一个已存在的临时目录。"""
+    folder = os.path.join(_tmp_dir, "folders", uuid.uuid4().hex[:8])
+    os.makedirs(folder, exist_ok=True)
+    return folder

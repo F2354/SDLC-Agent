@@ -29,7 +29,7 @@ def test_register_login_and_me(client):
     assert login.status_code == 200
 
 
-def test_create_project_and_flow(client):
+def test_create_project_and_flow(client, project_folder):
     username = unique_name("owner")
     reg = client.post(
         "/api/auth/register",
@@ -45,6 +45,7 @@ def test_create_project_and_flow(client):
             "name": "图书管理系统",
             "description": "毕业设计案例",
             "process_model_code": "waterfall",
+            "folder": project_folder,
         },
     )
     assert created.status_code == 201
@@ -139,12 +140,16 @@ def test_process_models_include_all_models(client):
             )
 
 
-def test_create_project_with_new_models(client):
+def test_create_project_with_new_models(client, project_folder):
     """Test creating projects with each new model."""
     for model_code in ["iterative", "spiral", "prototype", "scrum"]:
         response = client.post(
             "/api/projects",
-            json={"name": f"测试{model_code}", "process_model_code": model_code},
+            json={
+                "name": f"测试{model_code}",
+                "process_model_code": model_code,
+                "folder": project_folder,
+            },
         )
         assert response.status_code == 201, f"Failed to create project with {model_code}"
         project = response.json()
@@ -158,12 +163,16 @@ def test_create_project_with_new_models(client):
         assert all(s["status"] == "pending" for s in flow["stages"])
 
 
-def test_stage_sequence_enforcement(client):
+def test_stage_sequence_enforcement(client, project_folder):
     """Test that stages must be completed in order."""
     # Create project with iterative model
     response = client.post(
         "/api/projects",
-        json={"name": "顺序测试项目", "process_model_code": "iterative"},
+        json={
+            "name": "顺序测试项目",
+            "process_model_code": "iterative",
+            "folder": project_folder,
+        },
     )
     project_id = response.json()["id"]
 

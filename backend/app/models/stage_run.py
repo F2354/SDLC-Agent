@@ -135,3 +135,23 @@ class Review(Base):
 
     stage_run: Mapped["StageRun"] = relationship(back_populates="reviews")
     artifact: Mapped["Artifact | None"] = relationship(back_populates="reviews")
+
+
+class TraceabilityLink(Base):
+    """实体追溯关系：从需求到用例、模块、测试用例的显式关联。"""
+
+    __tablename__ = "traceability_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    artifact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("artifacts.id"), nullable=True, index=True
+    )
+    from_type: Mapped[str] = mapped_column(String(20))
+    from_key: Mapped[str] = mapped_column(String(50), index=True)
+    to_type: Mapped[str] = mapped_column(String(20))
+    to_key: Mapped[str] = mapped_column(String(50), index=True)
+    relation: Mapped[str] = mapped_column(String(30), default="derives")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    project: Mapped["Project"] = relationship(back_populates="traceability_links")

@@ -22,7 +22,7 @@ def test_parse_code_files():
     assert entries[1][0] == "requirements.txt"
 
 
-def test_code_tree_and_run_without_code(client):
+def test_code_tree_and_run_without_code(client, project_folder):
     username = unique_name("code_owner")
     reg = client.post(
         "/api/auth/register",
@@ -32,7 +32,11 @@ def test_code_tree_and_run_without_code(client):
     project = client.post(
         "/api/projects",
         headers=headers,
-        json={"name": "代码验证项目", "process_model_code": "waterfall"},
+        json={
+            "name": "代码验证项目",
+            "process_model_code": "waterfall",
+            "folder": project_folder,
+        },
     )
     project_id = project.json()["id"]
 

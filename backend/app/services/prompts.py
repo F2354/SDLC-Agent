@@ -70,6 +70,7 @@ STAGE_STRUCTURE = {
         "项目概述",
         "用户角色",
         "功能需求（需求条目 RQ-001）",
+        "用例设计（用例 UC-001，须标注其来源需求 RQ-001）",
         "非功能需求",
         "约束条件",
         "验收标准",
@@ -78,14 +79,14 @@ STAGE_STRUCTURE = {
     "architecture": [
         "系统架构",
         "技术选型",
-        "模块划分（模块 MOD-001）",
+        "模块划分（模块 MOD-001，须标注其实现的需求 RQ-001 或用例 UC-001）",
         "数据流设计",
         "部署视图",
     ],
     "detailed-design": [
         "类设计",
         "数据库设计",
-        "接口定义",
+        "接口定义（接口须关联模块 MOD-001）",
         "关键流程",
     ],
     "coding": [
@@ -97,7 +98,7 @@ STAGE_STRUCTURE = {
     "testing": [
         "测试策略",
         "测试计划",
-        "测试用例（测试用例 TC-001）",
+        "测试用例（测试用例 TC-001，须标注其验证的需求 RQ-001 或模块 MOD-001）",
         "测试报告模板",
     ],
     "risk-analysis": [
@@ -197,8 +198,11 @@ def build_stage_prompt(
         f"请生成《{stage_name}文档》，至少包含以下章节：\n{section_text}\n\n"
         "要求：\n"
         "1. 文档使用 Markdown 格式。\n"
-        "2. 实体使用规范编号，例如需求 RQ-001、模块 MOD-001、测试用例 TC-001。\n"
-        "3. 内容必须与前置产物保持一致，不能凭空发明未出现的功能。"
+        "2. 实体使用规范编号，例如需求 RQ-001、用例 UC-001、模块 MOD-001、测试用例 TC-001。\n"
+        "3. 每个实体使用三级标题单独成节，例如 `### 需求条目 RQ-001`。\n"
+        "4. 建立实体关联：用例标注来源需求，模块标注实现的需求或用例，"
+        "测试用例标注验证的需求或模块，便于自动生成追溯矩阵。\n"
+        "5. 内容必须与前置产物保持一致，不能凭空发明未出现的功能。"
     )
     return system, user
 
@@ -335,3 +339,168 @@ def build_code_stage_prompt(
     if error_info:
         user += f"\n\n上次验证失败信息：\n{error_info}\n请修复后完整重新输出全部文件。"
     return system, user
+
+
+# ---------------------------------------------------------------------------
+# 阶段直接沟通（chat 模式）：任意阶段都可与对应角色 agent 对话
+# ---------------------------------------------------------------------------
+
+
+def build_chat_system_prompt(stage_code: str) -> str:
+    """按阶段角色生成对话系统提示词。"""
+    role, instruction = STAGE_ROLE.get(
+        stage_code, ("软件工程专家", "负责推进当前阶段的工程活动。")
+    )
+    return (
+        f"你是一名{role}。{instruction}\n"
+        "你正在与项目发起人逐轮沟通以确定本阶段的具体内容。"
+        "每次只问 1 到 2 个关键问题，逐步收敛结论；信息足够时给出本阶段结论摘要。"
+        "始终使用简体中文，不要输出 Markdown 代码围栏。"
+    )
+
+
+def build_chat_opening(stage_code: str, stage_name: str) -> str:
+    """阶段进入 chat 模式时 agent 的开场白。"""
+    role, _ = STAGE_ROLE.get(stage_code, ("软件工程专家", ""))
+    return (
+        f"你好，我是本项目的{role}，负责「{stage_name}」阶段。"
+        "请说明本阶段你期望达成的目标与关键约束，我会据此逐步与你确认。"
+    )
+
+
+def build_confirm_prompt(
+    stage_code: str,
+    stage_name: str,
+    project_name: str,
+    project_description: str,
+    previous_artifacts: str,
+    transcript: str,
+) -> tuple[str, str]:
+    """把某个阶段的对话记录整理成该阶段的正式文档。"""
+    role, instruction = STAGE_ROLE.get(
+        stage_code, ("软件工程专家", "负责生成该阶段的专业工程文档。")
+    )
+    sections = STAGE_STRUCTURE.get(stage_code, ["概述", "详细设计", "补充说明"])
+    section_text = "\n".join(
+        f"{index}. {section}" for index, section in enumerate(sections, start=1)
+    )
+    system = (
+        f"你是一名{role}。{instruction}\n"
+        "请把与用户的沟通结论整理成规范 Markdown 文档，"
+        "始终使用简体中文，直接输出文档正文，不要输出解释性文字。"
+    )
+    user = (
+        f"项目名称：{project_name}\n"
+        f"项目描述：{project_description}\n"
+        f"当前阶段：{stage_name}\n\n"
+        f"前置阶段产物：\n{previous_artifacts or '（无）'}\n\n"
+        f"与用户的沟通记录：\n{transcript or '（无）'}\n\n"
+        f"请生成《{stage_name}文档》，至少包含以下章节：\n{section_text}\n\n"
+        "要求：\n"
+        "1. 内容只能来自沟通记录、前置产物与项目信息，不能凭空发明。\n"
+        "2. 实体使用规范编号：需求 RQ-001、用例 UC-001、模块 MOD-001、测试用例 TC-001。\n"
+        "3. 每个实体使用三级标题单独成节，例如 `### 需求条目 RQ-001`。\n"
+        "4. 明确标注实体关联关系，便于自动生成追溯矩阵。"
+    )
+    return system, user
+
+
+# ---------------------------------------------------------------------------
+# 评审 Agent：对阶段产物做检查清单与一致性审查
+# ---------------------------------------------------------------------------
+
+REVIEW_SYSTEM_PROMPT = (
+    "你是一名评审 Agent，负责对阶段产物进行质量与一致性审查。"
+    "请严格依据检查清单逐项核对，指出缺失、含糊或与前置产物冲突之处。"
+    "始终使用简体中文，输出简洁的 Markdown 清单，不要输出代码围栏。"
+)
+
+# 各阶段评审检查清单（评审 Agent 的自检依据）。
+REVIEW_CHECKLISTS: dict[str, list[str]] = {
+    "requirements": [
+        "是否覆盖项目目标、用户角色、功能与非功能需求、约束与验收标准",
+        "需求条目是否使用 RQ-001 连续编号且描述可验证",
+        "每个需求是否至少关联一个用例 UC-00X",
+        "是否存在与项目描述冲突或凭空新增的功能",
+    ],
+    "architecture": [
+        "是否给出系统架构、技术选型、模块划分与部署视图",
+        "模块是否使用 MOD-001 编号并说明其实现的需求或用例",
+        "是否覆盖全部需求，无遗漏关键模块",
+        "技术选型是否与约束条件一致",
+    ],
+    "detailed-design": [
+        "是否包含类设计、数据库设计、接口定义与关键流程",
+        "接口与数据表是否可追溯到模块",
+        "字段、类型与约束是否明确",
+        "是否与概要设计保持一致",
+    ],
+    "testing": [
+        "是否包含测试策略、测试计划、测试用例与报告模板",
+        "测试用例是否使用 TC-001 编号并标注验证的需求或模块",
+        "需求是否被测试用例覆盖，是否存在无对应需求的用例",
+        "是否包含边界与异常场景",
+    ],
+    "risk-analysis": [
+        "是否识别技术、资源与进度风险",
+        "是否给出量化评估与缓解策略",
+        "是否有风险监控计划",
+    ],
+    "evaluation": [
+        "是否对照验收标准逐项评估",
+        "是否给出下一步建议",
+    ],
+    "iteration-review": [
+        "是否回顾迭代目标并核对验收标准",
+        "是否给出下一迭代规划",
+    ],
+    "prototype": [
+        "原型是否覆盖核心交互流程",
+        "是否说明技术实现方案与演示方式",
+    ],
+    "user-feedback": [
+        "是否分类整理用户反馈并给出优先级",
+    ],
+    "refinement": [
+        "是否记录需求变更并分析影响",
+        "验收标准是否同步更新",
+    ],
+    "backlog": [
+        "用户故事是否按优先级排序并估算工作量",
+    ],
+    "sprint-planning": [
+        "Sprint 目标是否明确，任务是否拆分到可执行粒度",
+    ],
+    "sprint-review": [
+        "是否记录演示内容与利益相关者反馈",
+    ],
+    "sprint-retrospective": [
+        "是否给出改进计划与团队行动项",
+    ],
+}
+
+_DEFAULT_CHECKLIST = ["结构是否完整", "内容是否与前置产物一致", "是否存在含糊或缺失章节"]
+
+
+def build_review_prompt(
+    stage_code: str,
+    stage_name: str,
+    content: str,
+    traceability_summary: str = "",
+) -> tuple[str, str]:
+    checklist = REVIEW_CHECKLISTS.get(stage_code, _DEFAULT_CHECKLIST)
+    checklist_text = "\n".join(f"- {item}" for item in checklist)
+    user = (
+        f"阶段：{stage_name}\n\n"
+        f"待评审产物（Markdown）：\n{content or '（空）'}\n\n"
+        f"追溯矩阵摘要：{traceability_summary or '（暂无）'}\n\n"
+        f"检查清单：\n{checklist_text}\n\n"
+        "请按以下结构输出（不要输出代码围栏）：\n"
+        "## 评审结论\n"
+        "通过 / 需修改\n\n"
+        "## 检查清单核对\n"
+        "逐项列出：检查项 - 通过/不通过 - 原因\n\n"
+        "## 修改建议\n"
+        "列出具体可执行的修改点；若无需修改则写“无”。"
+    )
+    return REVIEW_SYSTEM_PROMPT, user

@@ -8,7 +8,7 @@ def unique_name(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
 
 
-def test_artifact_edit_and_activity(client):
+def test_artifact_edit_and_activity(client, project_folder):
     username = unique_name("artifact_owner")
     reg = client.post(
         "/api/auth/register",
@@ -18,7 +18,11 @@ def test_artifact_edit_and_activity(client):
     project = client.post(
         "/api/projects",
         headers=headers,
-        json={"name": "产物修订测试", "process_model_code": "waterfall"},
+        json={
+            "name": "产物修订测试",
+            "process_model_code": "waterfall",
+            "folder": project_folder,
+        },
     )
     project_id = project.json()["id"]
     flow = client.get(f"/api/projects/{project_id}/flow", headers=headers)

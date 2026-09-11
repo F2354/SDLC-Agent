@@ -73,3 +73,15 @@ class ActivityEventOut(BaseModel):
 
 class ArtifactUpdate(BaseModel):
     content_md: str = Field(min_length=1, max_length=20000)
+
+
+class ReviewOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    stage_run_id: int
+    artifact_id: int | None = None
+    reviewer_type: str
+    result: str
+    comment: str
+    created_at: datetime

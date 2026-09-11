@@ -37,6 +37,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=2000)
+    auto_advance: bool | None = None
 
 
 class ProjectOut(BaseModel):
@@ -47,6 +48,7 @@ class ProjectOut(BaseModel):
     description: str
     folder: str | None = None
     status: str
+    auto_advance: bool = False
     process_model: ProcessModelSummary
     owner_id: int
     created_at: datetime
@@ -62,3 +64,4 @@ class ProjectFlowStage(BaseModel):
 class ProjectFlowOut(BaseModel):
     process_model: ProcessModelSummary
     stages: list[ProjectFlowStage]
+    auto_advance: bool = False

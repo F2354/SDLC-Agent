@@ -1,14 +1,20 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
 if TYPE_CHECKING:
     from app.models.process_model import ProcessModel
-    from app.models.stage_run import ActivityEvent, Artifact, Message, StageRun
+    from app.models.stage_run import (
+        ActivityEvent,
+        Artifact,
+        Message,
+        StageRun,
+        TraceabilityLink,
+    )
     from app.models.user import User
 
 
@@ -24,6 +30,8 @@ class Project(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     folder: Mapped[str | None] = mapped_column(String(500), default=None)
     status: Mapped[str] = mapped_column(String(20), default="active")
+    # 统筹 Agent 自动推进：上一阶段评审通过后自动启动下一阶段。
+    auto_advance: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -43,5 +51,8 @@ class Project(Base):
         back_populates="project", cascade="all, delete-orphan"
     )
     activity_events: Mapped[list["ActivityEvent"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    traceability_links: Mapped[list["TraceabilityLink"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )

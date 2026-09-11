@@ -28,8 +28,11 @@ from app.schemas.stage import (
     StageStartRequest,
 )
 from app.schemas.analytics import ProjectStatsOut, TraceabilityOut
+from app.services.event_bus import publish
 from app.services.stage_service import (
-    INITIAL_INTERVIEW_MESSAGE,
+    STAGE_AGENT_CODE,
+    build_stage_opening,
+    is_code_stage,
     serialize_stage_run,
     start_stage_run_async,
 )
@@ -131,6 +134,8 @@ def update_project(
         project.name = payload.name
     if payload.description is not None:
         project.description = payload.description
+    if payload.auto_advance is not None:
+        project.auto_advance = payload.auto_advance
     db.commit()
     db.refresh(project)
     return project
@@ -227,6 +232,12 @@ def start_stage(
     if provider is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请先配置可用的模型 Provider")
 
+    if payload.mode == "chat" and is_code_stage(stage.code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"「{stage.name}」需要生成并运行代码，请使用自动模式",
+        )
+
     run = StageRun(
         project_id=project.id,
         stage_id=stage.id,
@@ -236,23 +247,43 @@ def start_stage(
     )
     db.add(run)
     db.flush()
-    if payload.mode == "chat" and stage.code == "requirements":
+    if payload.mode == "chat":
         run.status = "collecting"
         run.started_at = datetime.now()
-        db.add(
-            Message(
-                project_id=project.id,
-                stage_run_id=run.id,
-                role="agent",
-                agent_code="requirements_analyst",
-                content=INITIAL_INTERVIEW_MESSAGE,
-            )
+        opening = Message(
+            project_id=project.id,
+            stage_run_id=run.id,
+            role="agent",
+            agent_code=STAGE_AGENT_CODE.get(stage.code, "coordinator"),
+            content=build_stage_opening(stage),
         )
+        db.add(opening)
         db.commit()
         db.refresh(run)
+        db.refresh(opening)
+        publish(
+            project.id,
+            "stage_status",
+            {"stage_run_id": run.id, "stage_code": stage.code, "status": "collecting"},
+        )
+        publish(
+            project.id,
+            "message",
+            {
+                "stage_run_id": run.id,
+                "message_id": opening.id,
+                "role": "agent",
+                "content": opening.content,
+            },
+        )
     else:
         db.commit()
         db.refresh(run)
+        publish(
+            project.id,
+            "stage_status",
+            {"stage_run_id": run.id, "stage_code": stage.code, "status": "pending"},
+        )
         start_stage_run_async(run.id)
     return serialize_stage_run(run, db)
 
@@ -357,6 +388,7 @@ def project_flow(
             latest_runs[run.stage_id] = run
     return ProjectFlowOut(
         process_model=project.process_model,
+        auto_advance=project.auto_advance,
         stages=[
             ProjectFlowStage(
                 stage=StageOut.model_validate(stage),

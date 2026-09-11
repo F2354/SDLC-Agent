@@ -5,17 +5,18 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.project import Project
-from app.models.stage_run import Artifact, Message, StageRun
+from app.models.stage_run import Artifact, Message, Review, StageRun
 from app.models.user import User
 from app.schemas.stage import (
     ArtifactOut,
     ChatRequest,
     MessageOut,
+    ReviewOut,
     ReviewRequest,
     StageRunOut,
 )
 from app.services.stage_service import (
-    confirm_requirements,
+    confirm_stage,
     review_stage_run,
     send_interview_reply,
     serialize_message,
@@ -100,18 +101,46 @@ def send_chat_message(
     return serialize_message(reply)
 
 
+@router.post("/{run_id}/confirm", response_model=StageRunOut)
+def confirm_stage_run(
+    run_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """把当前阶段的对话记录整理成阶段文档（任意阶段可用）。"""
+    run = get_owned_stage_run(run_id, user, db)
+    try:
+        run = confirm_stage(run, db)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return serialize_stage_run(run, db)
+
+
 @router.post("/{run_id}/confirm-requirements", response_model=StageRunOut)
 def confirm_requirements_run(
     run_id: int,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """兼容旧接口：等价于 /confirm。"""
+    return confirm_stage_run(run_id, user, db)
+
+
+@router.get("/{run_id}/review", response_model=list[ReviewOut])
+def list_stage_run_reviews(
+    run_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """返回该阶段运行的评审记录，包含评审 Agent 的自动建议。"""
     run = get_owned_stage_run(run_id, user, db)
-    try:
-        run = confirm_requirements(run, db)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    return serialize_stage_run(run, db)
+    return list(
+        db.scalars(
+            select(Review)
+            .where(Review.stage_run_id == run.id)
+            .order_by(Review.id.desc())
+        )
+    )
 
 
 @router.post("/{run_id}/approve", response_model=StageRunOut)

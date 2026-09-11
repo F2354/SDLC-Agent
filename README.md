@@ -28,15 +28,48 @@ flowchart TB
 | 模块 | 职责 |
 | --- | --- |
 | 认证 | 用户注册、登录、JWT 鉴权 |
-| 项目管理 | 项目 CRUD、过程模型选择、流程状态 |
+| 项目管理 | 项目 CRUD、过程模型选择、流程状态、统筹自动推进开关 |
 | 过程模型引擎 | 配置化阶段定义，支持瀑布、V 模型、迭代、螺旋、原型、Scrum 六种模型 |
 | 阶段状态机 | 阶段运行状态、产物与评审流转 |
-| Agent 编排 | LangGraph 节点执行、需求访谈、文档生成 |
-| LLM 接入层 | OpenAI 兼容云服务与 Ollama，用户自带 Key |
+| Agent 编排 | LangGraph 条件图：生成 → 质量校验（不达标回退重试）→ 保存 → 评审 Agent |
+| LLM 接入层 | OpenAI 兼容云服务与 Ollama，用户自带 Key，支持流式输出 |
 | 制品管理 | 文档版本、人工编辑、Markdown/Word/PDF 导出 |
-| 评审闭环 | 产物通过/打回、评审意见、重新生成 |
-| 追溯矩阵 | 解析 RQ/UC/MOD/TC 实体并输出覆盖提示 |
+| 评审闭环 | 评审 Agent 自动检查清单 + 人工通过/打回、评审意见、重新生成 |
+| 追溯矩阵 | 解析 RQ/UC/MOD/TC 并落库为追溯关系，输出覆盖率与未定义引用提示 |
 | 代码生成 | 真实代码落盘、独立虚拟环境、运行验证、pytest |
+| 实时事件 | SSE 推送阶段状态、agent 执行、消息增量、产物保存、评审结果 |
+
+## 阶段参与模式
+
+每个阶段的启动都可选择模式：
+
+- **对话模式**：用户与当前阶段角色 agent 逐轮沟通，确认后整理成阶段文档。适用于所有文档类阶段。
+- **自动模式**：agent 直接生成阶段文档，或对编码/测试类阶段执行"写盘 → 运行验证 → 修复"工具循环。
+
+编码/测试类阶段（`coding`、`testing`、`unit-test`、`integration-test`、`system-test`、`prototype`、`sprint-dev`）
+需要真实写盘并运行验证，固定使用自动模式。
+
+## 实时事件
+
+`GET /api/projects/{id}/events` 提供 SSE 事件流，前端已用它替代轮询（连接不可用时自动退化为 3 秒轮询）：
+
+| 事件 | 说明 |
+| --- | --- |
+| `stage_status` | 阶段状态变化（collecting / generating / awaiting_review / approved / …） |
+| `agent_started` | agent 开始执行 |
+| `message_delta` | 对话回复的流式增量 |
+| `message` | 一条完整对话消息已保存 |
+| `artifact_saved` | 产物已保存并生成版本 |
+| `review_opened` | 进入人工评审 |
+| `review_suggested` | 评审 Agent 已输出检查清单建议 |
+| `review_result` | 人工评审完成 |
+| `stage_completed` | 全部阶段完成 |
+| `error` | 阶段执行失败 |
+
+## 统筹自动推进
+
+项目可开启 `auto_advance`（工作台右上角「统筹自动推进」）。开启后，某阶段评审通过会由统筹 Agent
+自动启动下一阶段，人工评审关卡仍然保留。
 
 ## 支持的开发模型
 
@@ -279,6 +312,13 @@ npm run preview
 - M9：工具化编码 Agent 循环
 - 新增 V 模型：7 阶段开发与验证对应流程
 - 迭代模型、螺旋模型、原型模型、Scrum
+- M10：编排与实时化升级
+  - SSE 事件流替代轮询（含流式消息增量）
+  - 评审 Agent：LangGraph 新增评审节点，自动输出检查清单与一致性建议
+  - 阶段双模式：所有文档类阶段均可对话生成，编码类阶段固定自动
+  - LangGraph 条件图：生成质量校验不达标自动回退重试
+  - 统筹 Agent：评审通过后自动推进下一阶段
+  - 追溯矩阵落库为 `traceability_links`，输出覆盖率与未定义引用提示
 
 ## 文档
 

@@ -11,6 +11,7 @@ from app.models.stage_run import (
     Message,
     Review,
     StageRun,
+    TraceabilityLink,
 )
 from app.models.user import User
 
@@ -28,5 +29,6 @@ __all__ = [
     "Review",
     "Stage",
     "StageRun",
+    "TraceabilityLink",
     "User",
 ]

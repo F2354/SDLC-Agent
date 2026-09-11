@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -7,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import settings
 from app.db.init_db import init_db
+from app.services.event_bus import set_event_loop
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -18,9 +20,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("数据库初始化失败，请检查 DATABASE_URL 与文件权限")
         raise
+    # 注册事件循环，供线程池中的阶段运行发布 SSE 事件。
+    set_event_loop(asyncio.get_running_loop())
     try:
         yield
     finally:
+        set_event_loop(None)
         # 优雅关闭：等待阶段运行线程池中的任务结束。
         from app.services.stage_service import shutdown_stage_executor
 

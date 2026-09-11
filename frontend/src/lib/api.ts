@@ -98,6 +98,7 @@ export interface Project {
   description: string
   folder: string | null
   status: string
+  auto_advance: boolean
   process_model?: ProcessModel
   owner_id: number
   created_at: string
@@ -113,6 +114,7 @@ export interface ProjectFlowStage {
 export interface ProjectFlow {
   process_model: ProcessModel
   stages: ProjectFlowStage[]
+  auto_advance: boolean
 }
 
 export interface Artifact {
@@ -182,10 +184,41 @@ export interface TraceabilityRow {
   entities: EntityGroup
 }
 
+export interface TraceabilityLink {
+  from_type: string
+  from_key: string
+  to_type: string
+  to_key: string
+  relation: string
+}
+
+export interface TraceabilityCoverage {
+  rq_total: number
+  rq_with_uc: number
+  rq_with_mod: number
+  rq_with_tc: number
+  mod_total: number
+  mod_with_tc: number
+  tc_total: number
+  unresolved: string[]
+}
+
 export interface Traceability {
   rows: TraceabilityRow[]
   entity_counts: Record<string, number>
   warnings: string[]
+  links: TraceabilityLink[]
+  coverage: TraceabilityCoverage
+}
+
+export interface Review {
+  id: number
+  stage_run_id: number
+  artifact_id: number | null
+  reviewer_type: string
+  result: string
+  comment: string
+  created_at: string
 }
 
 export interface ProjectStats {
@@ -254,6 +287,21 @@ export function listProcessModels() {
   return request<ProcessModel[]>('/process-models')
 }
 
+/** 项目 SSE 事件流地址，供 EventSource 订阅。 */
+export function projectEventsUrl(projectId: number) {
+  return `${API_BASE}/projects/${projectId}/events`
+}
+
+export function updateProject(
+  projectId: number,
+  payload: { name?: string; description?: string; auto_advance?: boolean },
+) {
+  return request<Project>(`/projects/${projectId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function listProjects() {
   return request<Project[]>('/projects')
 }
@@ -319,10 +367,16 @@ export function sendChatMessage(runId: number, content: string) {
   })
 }
 
-export function confirmRequirements(runId: number) {
-  return request<StageRun>(`/stage-runs/${runId}/confirm-requirements`, {
-    method: 'POST',
-  })
+export function confirmStage(runId: number) {
+  return request<StageRun>(
+    `/stage-runs/${runId}/confirm`,
+    { method: 'POST' },
+    LONG_TIMEOUT_MS,
+  )
+}
+
+export function listStageRunReviews(runId: number) {
+  return request<Review[]>(`/stage-runs/${runId}/review`)
 }
 
 export function approveStageRun(runId: number, comment = '') {
