@@ -306,6 +306,10 @@ export function listProjects() {
   return request<Project[]>('/projects')
 }
 
+export function getProject(projectId: number) {
+  return request<Project>(`/projects/${projectId}`)
+}
+
 export function createProject(payload: {
   name: string
   description?: string
