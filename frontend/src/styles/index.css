@@ -897,3 +897,37 @@ select:focus {
 .process-flow-section { background: #fbfcfd; }
 .process-flow-section, .chat-panel, .surface-section, .provider-row { border-radius: 0 !important; box-shadow: none !important; }
 @media (max-width: 900px) { .ide-sidebar { width: 196px; }.workspace-header, .team-strip { padding-left: 18px; padding-right: 18px; }.team-agent { min-width: 132px; } }
+
+
+.code-editor-pane { display: flex; min-height: 0; flex-direction: column; }
+.code-tabs { display: flex; min-height: 32px; align-items: stretch; gap: 2px; overflow-x: auto; border: 1px solid #dfe3e8; border-bottom: 0; background: #f2f4f7; }
+.code-tabs button { border: 0; border-right: 1px solid #e4e7ec; padding: 7px 12px; color: #667085; background: transparent; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; white-space: nowrap; }
+.code-tabs button:hover { color: #344054; background: #fff; }.code-tabs button.active { color: #1f2937; background: #fff; box-shadow: inset 0 -2px 0 #667085; }
+.code-editor-textarea { min-height: 360px; flex: 1; resize: none; border: 1px solid #dfe3e8; border-radius: 0 0 6px 6px; padding: 14px 16px; outline: none; color: #d0d5dd; background: #1f2937; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.65; }
+.code-editor-textarea:focus { border-color: #98a2b3; box-shadow: 0 0 0 2px rgba(152, 162, 179, .18); }
+.git-diff-panel { border: 1px solid #d0d5dd; background: #111827; color: #d1d5db; }
+
+
+.git-log-panel { border-top: 1px solid #dfe3e8; border-bottom: 1px solid #dfe3e8; background: #fbfcfd; }
+.git-log-title { padding: 8px 12px; color: #98a2b3; font-size: 9px; font-weight: 800; letter-spacing: .13em; }
+.git-log-row { display: grid; grid-template-columns: 70px minmax(0, 1fr) 90px; gap: 10px; border-top: 1px solid #eef0f2; padding: 7px 12px; color: #667085; font-size: 10px; }
+.git-log-row code { color: #475467; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }.git-log-row span { overflow: hidden; color: #344054; text-overflow: ellipsis; white-space: nowrap; }.git-log-row time { color: #98a2b3; text-align: right; }
+
+
+.skills-panel { border-top: 1px solid #dfe3e8; border-bottom: 1px solid #dfe3e8; background: #fbfcfd; }
+.skills-panel-heading { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; color: #98a2b3; font-size: 9px; font-weight: 800; letter-spacing: .13em; }
+.skills-panel-heading b { color: #667085; font-size: 9px; font-weight: 600; letter-spacing: 0; }
+.skills-empty { margin: 0; padding: 0 12px 10px; color: #98a2b3; font-size: 10px; line-height: 1.6; }
+.skills-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.skill-row { display: grid; grid-template-columns: 120px minmax(0, 1fr) 80px; gap: 8px; align-items: center; border-top: 1px solid #eef0f2; padding: 8px 12px; color: #667085; background: transparent; text-align: left; }
+.skill-row:hover, .skill-row.active { color: #344054; background: #f2f4f7; }
+.skill-name { overflow: hidden; color: #344054; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.skill-description { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.skill-row code { overflow: hidden; color: #98a2b3; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.skill-content { max-height: 220px; overflow: auto; margin: 0; border-top: 1px solid #dfe3e8; padding: 12px; color: #475467; background: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; line-height: 1.6; white-space: pre-wrap; }
+
+
+.mcp-panel { border-top: 1px solid #dfe3e8; border-bottom: 1px solid #dfe3e8; background: #fbfcfd; }
+.mcp-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #eef0f2; padding: 8px 12px; }
+.mcp-copy { min-width: 0; }.mcp-copy b { display: block; color: #344054; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }.mcp-copy small { display: block; margin-top: 2px; color: #98a2b3; font-size: 9px; }
+.mcp-tools { display: flex; flex-wrap: wrap; gap: 5px; border-top: 1px solid #eef0f2; padding: 8px 12px; }.mcp-tools span { border: 1px solid #d0d5dd; border-radius: 4px; padding: 3px 5px; color: #667085; background: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; }

@@ -298,6 +298,126 @@ npm run preview
 编码 Agent 的命令执行默认受限：仅允许 `python <工作区内脚本>`、`pytest`、`pip install/uninstall/list/show`，
 禁止 `python -c` 与自定义 pip 源；子进程使用最小化环境变量，不会继承平台 `SECRET_KEY`。
 
+## Coding Workspace 基础能力
+
+当前项目工作区已支持一组接近 Codex / OpenCode 的本地开发能力：
+
+### Git 工作流
+
+项目代码页提供以下 Git 操作：
+
+```text
+POST /api/projects/{id}/code/git/init
+GET  /api/projects/{id}/code/git/status
+GET  /api/projects/{id}/code/git/diff
+GET  /api/projects/{id}/code/git/log
+POST /api/projects/{id}/code/git/commit
+```
+
+Git 操作只作用于项目自身文件夹：如果项目目录没有直接的 `.git`，状态接口不会误识别父级仓库；初始化后可以在工作区查看变更、Diff、提交历史并创建提交。提交会先执行 `git add -A`，再使用平台的本地提交身份创建 commit。
+
+### MCP Server 配置
+
+项目可在以下任一位置放置 MCP 配置：
+
+```text
+<project>/.sdlc/mcp.json
+<project>/.opencode/mcp.json
+<project>/mcp.json
+```
+
+配置示例：
+
+```json
+{
+  "filesystem": {
+    "type": "local",
+    "command": ["python", "mcp_server.py"],
+    "enabled": true,
+    "environment": {"TOKEN": "..."}
+  }
+}
+```
+
+接口：
+
+```text
+GET  /api/projects/{id}/mcp
+POST /api/projects/{id}/mcp/{server_name}/discover
+```
+
+配置读取不会自动执行命令；只有用户在工作区点击「发现工具」时，才会显式启动本地 stdio MCP Server，执行 `initialize` 和 `tools/list`。环境变量只返回键名，不会在 API 响应中暴露值。当前版本提供本地 stdio 工具发现基础，远程 MCP 和 `tools/call` 将在后续 Runtime 阶段接入统一 Agent 工具权限。
+
+### Agent 配置和权限
+
+项目可以使用以下 Agent 配置文件：
+
+```text
+<project>/.sdlc/agents.json
+<project>/.opencode/agents.json
+<project>/agents.json
+```
+
+示例：
+
+```json
+{
+  "agents": {
+    "developer": {
+      "mode": "primary",
+      "model": "provider/code-model",
+      "description": "负责代码实现",
+      "permissions": {
+        "read": "allow",
+        "edit": "allow",
+        "bash": "ask",
+        "git": "ask"
+      }
+    }
+  }
+}
+```
+
+接口：
+
+```text
+GET /api/projects/{id}/agents
+```
+
+编码 Agent 已经使用 `read / edit / bash` 权限策略拦截工具；`deny` 会直接阻止工具调用。
+
+### Project Skills
+
+项目可在以下任一目录放置 `SKILL.md`：
+
+```text
+<project>/.sdlc/skills/<skill-name>/SKILL.md
+<project>/.opencode/skills/<skill-name>/SKILL.md
+<project>/skills/<skill-name>/SKILL.md
+```
+
+文件使用轻量 Markdown front matter：
+
+```markdown
+---
+name: python-style
+description: Python coding and testing conventions
+---
+
+# Python style
+
+Use type hints, small functions, and pytest for behavior changes.
+```
+
+接口：
+
+```text
+GET /api/projects/{id}/skills
+GET /api/projects/{id}/skills/{skill_name}
+```
+
+Skill 只作为项目规则和 Agent 上下文加载，不会自动执行其中的脚本。编码 Agent 会按任务关键词加载匹配的 Skills；加载器会限制文件大小、忽略符号链接，并拒绝缺少 `name`、`description` 或正文的无效 Skill。
+
 ## 当前状态
 
 - M0：项目骨架

@@ -109,6 +109,7 @@ export interface ProjectFlowStage {
   stage: Stage
   status: string
   stage_run_id: number | null
+  dependencies: string[]
 }
 
 export interface ProjectFlow {
@@ -237,6 +238,44 @@ export interface CodeFile {
 export interface CodeTree {
   exists: boolean
   files: CodeFile[]
+}
+
+export interface GitLogEntry {
+  commit: string
+  author: string
+  date: string
+  subject: string
+}
+
+export interface GitStatus {
+  is_repo: boolean
+  branch: string
+  clean: boolean
+  changed_files: number
+  files: string[]
+}
+
+export interface SkillSummary {
+  name: string
+  description: string
+  path: string
+  source: string
+  metadata: Record<string, unknown>
+}
+
+export interface Skill extends SkillSummary {
+  content: string
+}
+
+export interface McpServer {
+  name: string
+  type: string
+  enabled: boolean
+  command: string[]
+  url: string | null
+  env_keys: string[]
+  tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>
+  error: string | null
 }
 
 export interface CodeRun {
@@ -416,8 +455,56 @@ export function getTraceability(projectId: number) {
   return request<Traceability>(`/projects/${projectId}/traceability`)
 }
 
+export function listProjectSkills(projectId: number) {
+  return request<SkillSummary[]>(`/projects/${projectId}/skills`)
+}
+
+export function getProjectSkill(projectId: number, name: string) {
+  return request<Skill>(`/projects/${projectId}/skills/${encodeURIComponent(name)}`)
+}
+
+export function listProjectMcp(projectId: number) {
+  return request<McpServer[]>(`/projects/${projectId}/mcp`)
+}
+
+export function discoverProjectMcp(projectId: number, name: string) {
+  return request<McpServer>(`/projects/${projectId}/mcp/${encodeURIComponent(name)}/discover`, { method: 'POST' })
+}
+
+export function initGit(projectId: number) {
+  return request<GitStatus>(`/projects/${projectId}/code/git/init`, { method: 'POST' })
+}
+
+export function getGitLog(projectId: number) {
+  return request<GitLogEntry[]>(`/projects/${projectId}/code/git/log`)
+}
+
+export function commitGit(projectId: number, message: string) {
+  return request<{ created: boolean; commit: string; message: string }>(`/projects/${projectId}/code/git/commit`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  })
+}
+
+export function getGitStatus(projectId: number) {
+  return request<GitStatus>(`/projects/${projectId}/code/git/status`)
+}
+
+export async function getGitDiff(projectId: number) {
+  const response = await fetch(`${API_BASE}/projects/${projectId}/code/git/diff`)
+  if (!response.ok) throw new ApiError(response.status, parseErrorBody(await response.text(), response.status))
+  return response.text()
+}
+
 export function getCodeTree(projectId: number) {
   return request<CodeTree>(`/projects/${projectId}/code/tree`)
+}
+
+export function saveCodeFile(projectId: number, path: string, content: string) {
+  return request<{ path: string; saved: boolean }>(`/projects/${projectId}/code/file`, {
+    method: 'POST',
+    body: JSON.stringify({ path, content }),
+  })
 }
 
 export async function getCodeFile(projectId: number, path: string) {

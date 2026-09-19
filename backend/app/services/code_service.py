@@ -228,6 +228,107 @@ def write_files(
     return written
 
 
+
+def _repo_dir(project_id: int) -> Path | None:
+    """Return the project's own Git root, never an accidental parent repo."""
+    root = _project_root(project_id)
+    marker = root / ".git"
+    return root if marker.exists() else None
+
+
+def _git_run(project_id: int, args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
+    root = _project_root(project_id)
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=subprocess_env(project_id),
+    )
+
+
+def init_git_repo(project_id: int) -> dict:
+    root = _project_root(project_id)
+    root.mkdir(parents=True, exist_ok=True)
+    if not (root / ".gitignore").exists():
+        (root / ".gitignore").write_text(
+            ".venv/\n__pycache__/\n*.pyc\n.pytest_cache/\n.requirements-safe.txt\n.env\n",
+            encoding="utf-8",
+        )
+    if _repo_dir(project_id) is None:
+        result = _git_run(project_id, ["init"], timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "初始化 Git 仓库失败")
+    return git_status(project_id)
+
+
+def git_status(project_id: int) -> dict:
+    if _repo_dir(project_id) is None:
+        return {"is_repo": False, "branch": "", "clean": True, "changed_files": 0, "files": []}
+    branch_result = _git_run(project_id, ["branch", "--show-current"])
+    status_result = _git_run(project_id, ["status", "--porcelain=v1"])
+    if status_result.returncode != 0:
+        raise RuntimeError(status_result.stderr.strip() or "读取 Git 状态失败")
+    entries = [line for line in status_result.stdout.splitlines() if line.strip()]
+    files = [line[3:] if len(line) > 3 else line for line in entries]
+    return {
+        "is_repo": True,
+        "branch": branch_result.stdout.strip() or "HEAD",
+        "clean": not entries,
+        "changed_files": len(entries),
+        "files": files,
+    }
+
+
+def git_diff(project_id: int) -> str:
+    if _repo_dir(project_id) is None:
+        return "未检测到 Git 仓库。"
+    result = _git_run(project_id, ["diff", "--no-ext-diff", "--no-color"])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "读取 Git diff 失败")
+    cached = _git_run(project_id, ["diff", "--cached", "--no-ext-diff", "--no-color"])
+    output = result.stdout
+    if cached.returncode == 0 and cached.stdout:
+        output += "\n\n# Staged changes\n" + cached.stdout
+    return output or "工作区没有未提交的差异。"
+
+
+def git_log(project_id: int, limit: int = 12) -> list[dict[str, str]]:
+    if _repo_dir(project_id) is None:
+        return []
+    result = _git_run(project_id, ["log", f"-n{max(1, min(limit, 50))}", "--format=%h%x09%an%x09%ad%x09%s", "--date=short"])
+    if result.returncode != 0:
+        return []
+    entries: list[dict[str, str]] = []
+    for line in result.stdout.splitlines():
+        commit, author, date, subject = (line.split("\t", 3) + ["", "", "", ""])[:4]
+        entries.append({"commit": commit, "author": author, "date": date, "subject": subject})
+    return entries
+
+
+def git_commit(project_id: int, message: str) -> dict:
+    message = message.strip()
+    if not message:
+        raise ValueError("提交说明不能为空")
+    if _repo_dir(project_id) is None:
+        raise RuntimeError("请先初始化 Git 仓库")
+    add_result = _git_run(project_id, ["add", "-A"])
+    if add_result.returncode != 0:
+        raise RuntimeError(add_result.stderr.strip() or "暂存 Git 变更失败")
+    staged = _git_run(project_id, ["diff", "--cached", "--quiet"])
+    if staged.returncode == 0:
+        return {"created": False, "commit": "", "message": "没有可提交的变更"}
+    commit_result = _git_run(
+        project_id,
+        ["-c", "user.name=SDLC Agent", "-c", "user.email=sdlc-agent@local", "commit", "-m", message],
+        timeout=60,
+    )
+    if commit_result.returncode != 0:
+        raise RuntimeError(commit_result.stderr.strip() or "创建 Git 提交失败")
+    head = _git_run(project_id, ["rev-parse", "--short", "HEAD"])
+    return {"created": True, "commit": head.stdout.strip(), "message": message}
+
+
 def list_code_files(project_id: int) -> CodeTreeOut:
     base = _target_dir(project_id, "code")
     if not base.exists():

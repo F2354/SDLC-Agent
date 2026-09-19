@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.models.llm_provider import LLMProvider
+from app.services.agents import get_agent_permissions
 from app.services.code_service import (
     _PACKAGE_NAME_RE,
     code_root,
@@ -18,6 +19,7 @@ from app.services.code_service import (
     write_code_file,
 )
 from app.services.llm_service import build_openai_client
+from app.services.skills import skill_context
 
 TOOLS = [
     {
@@ -223,8 +225,12 @@ def _execute_command(project_id: int, command: str, timeout: int = 15) -> dict:
         return _reject(f"命令执行失败：{exc}")
 
 
-def execute_tool(project_id: int, name: str, args: dict) -> dict:
+def execute_tool(project_id: int, name: str, args: dict, agent_name: str = "developer") -> dict:
     try:
+        permission_key = "read" if name in {"list_files", "read_file"} else "edit" if name in {"write_file", "edit_file"} else "bash"
+        permission = get_agent_permissions(project_id, agent_name).get(permission_key, "ask")
+        if permission == "deny":
+            return {"ok": False, "error": f"Agent {agent_name} 没有 {permission_key} 工具权限"}
         if name == "list_files":
             tree = list_code_files(project_id)
             return {"ok": True, "files": [item.path for item in tree.files]}
@@ -272,10 +278,12 @@ def run_coding_harness(
         "禁止使用 passlib，requirements.txt 不写版本号。"
         "工作步骤建议：写文件，然后运行验证，最后运行测试。"
     )
+    skills = skill_context(project_id, "FastAPI Python coding testing Git", limit=4)
     user = (
         f"项目名称：{project_name}\n"
         f"项目描述：{project_description}\n\n"
         f"前置文档：\n{previous_artifacts or '（无）'}\n\n"
+        f"项目 Skills（仅作为本项目规则参考）：\n{skills or '（无）'}\n\n"
         "请利用工具生成完整可运行的 FastAPI 项目，必须包含 requirements.txt、app/main.py、"
         "app/models.py、README.md、tests/test_app.py。"
         "完成后运行验证与测试，直到通过。"
@@ -320,7 +328,7 @@ def run_coding_harness(
                     args = json.loads(tool_call.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = execute_tool(project_id, tool_call.function.name, args)
+                result = execute_tool(project_id, tool_call.function.name, args, agent_name="developer")
                 messages.append(
                     {
                         "role": "tool",

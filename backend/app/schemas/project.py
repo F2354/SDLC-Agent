@@ -59,6 +59,7 @@ class ProjectFlowStage(BaseModel):
     stage: StageOut
     status: str
     stage_run_id: int | None = None
+    dependencies: list[str] = []
 
 
 class ProjectFlowOut(BaseModel):

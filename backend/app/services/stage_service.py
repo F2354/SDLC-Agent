@@ -40,6 +40,7 @@ from app.services.code_service import (
 from app.services.coding_agent import run_coding_harness
 from app.services.artifact_file import write_artifact_file
 from app.services.traceability import rebuild_traceability
+from app.services.process_graph import get_stage_dependencies
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -1099,7 +1100,13 @@ def review_stage_run(
     return run
 
 
-def _next_stage(db: Session, project: Project, stage_id: int) -> Stage | None:
+def _ready_stage_codes(db: Session, project: Project) -> list[Stage]:
+    """Return stages whose dependency runs are approved and which are not done.
+
+    This is intentionally dependency based rather than ``seq - 1`` based. It
+    lets a V-model project fan out into multiple verification agents while the
+    waterfall model still remains a strict chain.
+    """
     stages = list(
         db.scalars(
             select(Stage)
@@ -1107,61 +1114,80 @@ def _next_stage(db: Session, project: Project, stage_id: int) -> Stage | None:
             .order_by(Stage.seq)
         )
     )
-    for index, stage in enumerate(stages):
-        if stage.id == stage_id:
-            return stages[index + 1] if index + 1 < len(stages) else None
-    return None
+    latest_runs: dict[int, StageRun] = {}
+    for run in db.scalars(
+        select(StageRun)
+        .where(StageRun.project_id == project.id)
+        .order_by(StageRun.id.desc())
+    ):
+        latest_runs.setdefault(run.stage_id, run)
+    codes = [stage.code for stage in stages]
+    ready: list[Stage] = []
+    for stage in stages:
+        latest = latest_runs.get(stage.id)
+        if latest is not None:
+            # A rejected/failed branch needs an explicit user retry; auto advance
+            # must never silently overwrite that decision.
+            continue
+        dependencies = get_stage_dependencies(project.process_model.code, stage.code, codes)
+        dependency_ids = {item.code: item.id for item in stages}
+        if all(
+            any(
+                run.stage_id == dependency_ids[dependency_code]
+                and run.status in {"approved", "completed"}
+                for run in latest_runs.values()
+            )
+            for dependency_code in dependencies
+            if dependency_code in dependency_ids
+        ):
+            ready.append(stage)
+    return ready
 
 
-def _maybe_auto_advance(run: StageRun, db: Session) -> StageRun | None:
-    """统筹 Agent：项目开启自动推进时，评审通过后自动启动下一阶段。"""
+def _maybe_auto_advance(run: StageRun, db: Session) -> list[StageRun]:
+    """Start every newly-unblocked stage, not only the next sequential stage."""
     project = db.get(Project, run.project_id)
     if project is None or not project.auto_advance:
-        return None
-    next_stage = _next_stage(db, project, run.stage_id)
-    if next_stage is None:
+        return []
+    started: list[StageRun] = []
+    for stage in _ready_stage_codes(db, project):
+        new_run = StageRun(
+            project_id=project.id,
+            stage_id=stage.id,
+            provider_id=run.provider_id,
+            status="pending",
+            mode="auto",
+        )
+        db.add(new_run)
+        db.flush()
+        db.add(
+            ActivityEvent(
+                project_id=project.id,
+                stage_run_id=new_run.id,
+                event_type="coordinator",
+                message=f"统筹 Agent 自动启动阶段「{stage.name}」",
+            )
+        )
+        started.append(new_run)
+    if not started:
+        stages = list(db.scalars(select(Stage).where(Stage.process_model_id == project.process_model_id)))
+        latest_statuses = [
+            item.status
+            for item in db.scalars(select(StageRun).where(StageRun.project_id == project.id))
+        ]
+        if stages and latest_statuses and all(status in {"approved", "completed"} for status in latest_statuses):
+            publish(project.id, "stage_completed", {"message": "全部阶段已完成"})
+        return []
+    db.commit()
+    for new_run in started:
+        stage = db.get(Stage, new_run.stage_id)
         publish(
             project.id,
-            "stage_completed",
-            {"stage_run_id": run.id, "message": "全部阶段已完成"},
+            "stage_status",
+            {"stage_run_id": new_run.id, "stage_code": stage.code if stage else "", "status": "pending"},
         )
-        return None
-    existing = db.scalar(
-        select(StageRun).where(
-            StageRun.project_id == project.id,
-            StageRun.stage_id == next_stage.id,
-            StageRun.status.in_(
-                ["pending", "collecting", "generating", "awaiting_review", "approved"]
-            ),
-        )
-    )
-    if existing is not None:
-        return None
-    new_run = StageRun(
-        project_id=project.id,
-        stage_id=next_stage.id,
-        provider_id=run.provider_id,
-        status="pending",
-        mode="auto",
-    )
-    db.add(new_run)
-    db.flush()
-    db.add(
-        ActivityEvent(
-            project_id=project.id,
-            stage_run_id=new_run.id,
-            event_type="coordinator",
-            message=f"统筹 Agent 自动启动下一阶段「{next_stage.name}」",
-        )
-    )
-    db.commit()
-    publish(
-        project.id,
-        "stage_status",
-        {"stage_run_id": new_run.id, "stage_code": next_stage.code, "status": "pending"},
-    )
-    start_stage_run_async(new_run.id)
-    return new_run
+        start_stage_run_async(new_run.id)
+    return started
 
 
 def serialize_message(message: Message) -> MessageOut:

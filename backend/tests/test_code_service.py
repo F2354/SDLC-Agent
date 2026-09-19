@@ -47,3 +47,101 @@ def test_code_tree_and_run_without_code(client, project_folder):
     run = client.post(f"/api/projects/{project_id}/code/run", headers=headers)
     assert run.status_code == 200
     assert run.json()["ok"] is False
+
+
+def test_code_editor_and_git_endpoints(client, project_folder):
+    username = unique_name("code_editor")
+    reg = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    project = client.post("/api/projects", headers=headers, json={"name": "编辑器项目", "process_model_code": "waterfall", "folder": project_folder})
+    project_id = project.json()["id"]
+
+    saved = client.post(f"/api/projects/{project_id}/code/file", headers=headers, json={"path": "app.py", "content": "print('ok')"})
+    assert saved.status_code == 200
+    content = client.get(f"/api/projects/{project_id}/code/file", headers=headers, params={"path": "app.py"})
+    assert content.text == "print('ok')"
+
+    status = client.get(f"/api/projects/{project_id}/code/git/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["is_repo"] is False
+
+    rejected = client.post(f"/api/projects/{project_id}/code/file", headers=headers, json={"path": "../escape.py", "content": "bad"})
+    assert rejected.status_code == 400
+
+
+def test_project_skills_endpoint(client, project_folder):
+    username = unique_name("skills")
+    reg = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    project = client.post("/api/projects", headers=headers, json={"name": "Skills 项目", "process_model_code": "waterfall", "folder": project_folder})
+    project_id = project.json()["id"]
+    skill_dir = __import__("pathlib").Path(project_folder) / ".sdlc" / "skills" / "python-style"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: python-style\ndescription: Python coding rules\n---\n# Rules\nUse type hints.", encoding="utf-8")
+
+    listed = client.get(f"/api/projects/{project_id}/skills", headers=headers)
+    assert listed.status_code == 200
+    assert listed.json()[0]["name"] == "python-style"
+    detail = client.get(f"/api/projects/{project_id}/skills/python-style", headers=headers)
+    assert detail.status_code == 200
+    assert "type hints" in detail.json()["content"]
+
+
+def test_git_full_workflow(client, project_folder):
+    username = unique_name("git_workflow")
+    reg = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    project = client.post("/api/projects", headers=headers, json={"name": "Git 工作流项目", "process_model_code": "waterfall", "folder": project_folder})
+    project_id = project.json()["id"]
+
+    client.post(f"/api/projects/{project_id}/code/file", headers=headers, json={"path": "README.md", "content": "# Demo\n"})
+    initialized = client.post(f"/api/projects/{project_id}/code/git/init", headers=headers)
+    assert initialized.status_code == 200
+    assert initialized.json()["is_repo"] is True
+
+    committed = client.post(f"/api/projects/{project_id}/code/git/commit", headers=headers, json={"message": "Initial workspace"})
+    assert committed.status_code == 200
+    assert committed.json()["created"] is True
+
+    status = client.get(f"/api/projects/{project_id}/code/git/status", headers=headers)
+    assert status.json()["clean"] is True
+    log = client.get(f"/api/projects/{project_id}/code/git/log", headers=headers)
+    assert log.status_code == 200
+    assert log.json()[0]["subject"] == "Initial workspace"
+
+
+def test_project_mcp_config_and_discovery_listing(client, project_folder):
+    username = unique_name("mcp")
+    reg = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    project = client.post("/api/projects", headers=headers, json={"name": "MCP 项目", "process_model_code": "waterfall", "folder": project_folder})
+    project_id = project.json()["id"]
+    config = __import__("pathlib").Path(project_folder) / ".sdlc" / "mcp.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"filesystem": {"type": "local", "command": ["python", "server.py"], "enabled": true, "environment": {"TOKEN": "secret"}}}', encoding="utf-8")
+
+    listed = client.get(f"/api/projects/{project_id}/mcp", headers=headers)
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body[0]["name"] == "filesystem"
+    assert body[0]["env_keys"] == ["TOKEN"]
+    assert "secret" not in listed.text
+
+    discovered = client.post(f"/api/projects/{project_id}/mcp/filesystem/discover", headers=headers)
+    assert discovered.status_code == 200
+    assert discovered.json()["error"]
+
+
+def test_project_agent_profiles_and_permissions(client, project_folder):
+    username = unique_name("agents")
+    reg = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    project = client.post("/api/projects", headers=headers, json={"name": "Agent 配置项目", "process_model_code": "waterfall", "folder": project_folder})
+    project_id = project.json()["id"]
+    config = __import__("pathlib").Path(project_folder) / ".sdlc" / "agents.json"
+    config.parent.mkdir(parents=True)
+    config.write_text('{"agents": {"developer": {"mode": "primary", "description": "Writes code", "permissions": {"edit": "allow", "bash": "deny"}}}}', encoding="utf-8")
+
+    response = client.get(f"/api/projects/{project_id}/agents", headers=headers)
+    assert response.status_code == 200
+    assert response.json()[0]["permissions"]["bash"] == "deny"

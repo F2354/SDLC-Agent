@@ -37,6 +37,7 @@ from app.services.stage_service import (
     start_stage_run_async,
 )
 from app.services.traceability import compute_traceability
+from app.services.process_graph import get_stage_dependencies
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -184,7 +185,8 @@ def start_stage(
     if running is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该阶段正在执行")
 
-    # Enforce stage sequence: previous stage must be approved
+    # Scheduling is dependency-graph based. Independent branches (for example
+    # the three V-model verification lanes) can start in parallel.
     all_stages = list(
         db.scalars(
             select(Stage)
@@ -192,25 +194,29 @@ def start_stage(
             .order_by(Stage.seq)
         )
     )
-    for idx, s in enumerate(all_stages):
-        if s.id == stage.id:
-            if idx > 0:
-                prev_stage = all_stages[idx - 1]
-                prev_run = db.scalar(
+    stage_codes = [item.code for item in all_stages]
+    dependencies = get_stage_dependencies(project.process_model.code, stage.code, stage_codes)
+    if dependencies:
+        dependency_stages = {item.code: item for item in all_stages if item.code in dependencies}
+        for dependency_code in dependencies:
+            dependency_stage = dependency_stages.get(dependency_code)
+            dependency_run = None
+            if dependency_stage is not None:
+                dependency_run = db.scalar(
                     select(StageRun)
                     .where(
                         StageRun.project_id == project.id,
-                        StageRun.stage_id == prev_stage.id,
-                        StageRun.status == "approved",
+                        StageRun.stage_id == dependency_stage.id,
+                        StageRun.status.in_(["approved", "completed"]),
                     )
                     .order_by(StageRun.id.desc())
                 )
-                if prev_run is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"请先完成并通过上一阶段「{prev_stage.name}」",
-                    )
-            break
+            if dependency_run is None:
+                dependency_name = dependency_stage.name if dependency_stage else dependency_code
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"请先完成并通过依赖阶段「{dependency_name}」",
+                )
 
     provider = None
     if payload.provider_id is not None:
@@ -396,6 +402,11 @@ def project_flow(
                 if stage.id in latest_runs
                 else "pending",
                 stage_run_id=latest_runs[stage.id].id if stage.id in latest_runs else None,
+                dependencies=get_stage_dependencies(
+                    project.process_model.code,
+                    stage.code,
+                    [item.code for item in stages],
+                ),
             )
             for stage in stages
         ],

@@ -8,8 +8,17 @@ import {
   getCodeFile,
   getCodeTree,
   getProject,
+  getGitStatus,
+  getGitDiff,
+  initGit,
+  getGitLog,
+  commitGit,
   getProjectFlow,
   getProjectStats,
+  listProjectSkills,
+  getProjectSkill,
+  listProjectMcp,
+  discoverProjectMcp,
   getStageRunMessages,
   getTraceability,
   listActivityEvents,
@@ -19,6 +28,7 @@ import {
   projectEventsUrl,
   rejectStageRun,
   runGeneratedCode,
+  saveCodeFile,
   sendChatMessage,
   startStage,
   testGeneratedCode,
@@ -30,6 +40,10 @@ import {
   type CodeTree,
   type Message,
   type Project,
+  type GitStatus,
+  type SkillSummary,
+  type Skill,
+  type McpServer,
   type ProjectStats,
   type ProjectFlow,
   type Provider,
@@ -323,7 +337,21 @@ export default function ProjectWorkspacePage() {
   const [codeTree, setCodeTree] = useState<CodeTree>({ exists: false, files: [] })
   const [selectedCodePath, setSelectedCodePath] = useState('')
   const [codeContent, setCodeContent] = useState('')
+  const [openCodePaths, setOpenCodePaths] = useState<string[]>([])
+  const [codeDirty, setCodeDirty] = useState(false)
+  const [codeDrafts, setCodeDrafts] = useState<Record<string, string>>({})
+  const [codeDirtyPaths, setCodeDirtyPaths] = useState<Record<string, boolean>>({})
+  const [codeSaving, setCodeSaving] = useState(false)
   const [codeOutput, setCodeOutput] = useState('')
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
+  const [gitDiff, setGitDiff] = useState('')
+  const [gitLog, setGitLog] = useState<import('../lib/api').GitLogEntry[]>([])
+  const [gitMessage, setGitMessage] = useState('')
+  const [gitBusy, setGitBusy] = useState(false)
+  const [skills, setSkills] = useState<SkillSummary[]>([])
+  const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null)
+  const [mcpServers, setMcpServers] = useState<McpServer[]>([])
+  const [mcpBusy, setMcpBusy] = useState<string | null>(null)
   const [codeRunning, setCodeRunning] = useState<'run' | 'test' | null>(null)
   const [exportingId, setExportingId] = useState<string | null>(null)
   const [providers, setProviders] = useState<Provider[]>([])
@@ -374,7 +402,7 @@ export default function ProjectWorkspacePage() {
       loadingRef.current = true
       setError('')
       try {
-        const [nextProject, nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace, nextCodeTree] =
+        const [nextProject, nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace, nextCodeTree, nextGitStatus] =
           await Promise.all([
             getProject(validProjectId),
             getProjectFlow(validProjectId),
@@ -383,6 +411,7 @@ export default function ProjectWorkspacePage() {
             getProjectStats(validProjectId),
             getTraceability(validProjectId),
             getCodeTree(validProjectId),
+            getGitStatus(validProjectId),
           ])
         if (!mountedRef.current) return
         setProject(nextProject)
@@ -392,6 +421,10 @@ export default function ProjectWorkspacePage() {
         setStats(nextStats)
         setTraceability(nextTrace)
         setCodeTree(nextCodeTree)
+        setGitStatus(nextGitStatus)
+        if (nextGitStatus.is_repo) {
+          void getGitLog(validProjectId).then((entries) => { if (mountedRef.current) setGitLog(entries) })
+        }
       } catch (err) {
         if (!mountedRef.current) return
         setError(err instanceof Error ? err.message : '加载失败')
@@ -464,6 +497,20 @@ export default function ProjectWorkspacePage() {
       setLiveConnected(false)
     }
   }, [validProjectId, load])
+
+  useEffect(() => {
+    if (validProjectId === null) return
+    listProjectMcp(validProjectId)
+      .then((list) => { if (mountedRef.current) setMcpServers(list) })
+      .catch(() => { if (mountedRef.current) setMcpServers([]) })
+  }, [validProjectId])
+
+  useEffect(() => {
+    if (validProjectId === null) return
+    listProjectSkills(validProjectId)
+      .then((list) => { if (mountedRef.current) setSkills(list) })
+      .catch(() => { if (mountedRef.current) setSkills([]) })
+  }, [validProjectId])
 
   useEffect(() => {
     listProviders()
@@ -702,15 +749,84 @@ export default function ProjectWorkspacePage() {
   }
 
   async function handleViewCode(path: string) {
-    if (validProjectId === null) {
+    if (validProjectId === null) return
+    if (codeDirty && path !== selectedCodePath && !window.confirm('当前文件有未保存修改，切换文件会保留在当前编辑会话中，继续吗？')) return
+    setSelectedCodePath(path)
+    setOpenCodePaths((prev) => (prev.includes(path) ? prev : [...prev, path]))
+    setError('')
+    if (Object.prototype.hasOwnProperty.call(codeDrafts, path)) {
+      setCodeContent(codeDrafts[path])
+      setCodeDirty(codeDirtyPaths[path] === true)
       return
     }
-    setSelectedCodePath(path)
-    setError('')
     try {
-      setCodeContent(await getCodeFile(validProjectId, path))
+      const content = await getCodeFile(validProjectId, path)
+      setCodeContent(content)
+      setCodeDrafts((prev) => ({ ...prev, [path]: content }))
+      setCodeDirtyPaths((prev) => ({ ...prev, [path]: false }))
+      setCodeDirty(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : '读取代码失败')
+    }
+  }
+
+  async function handleSaveCode() {
+    if (validProjectId === null || !selectedCodePath || codeSaving) return
+    setCodeSaving(true)
+    setError('')
+    try {
+      await saveCodeFile(validProjectId, selectedCodePath, codeContent)
+      setCodeDrafts((prev) => ({ ...prev, [selectedCodePath]: codeContent }))
+      setCodeDirtyPaths((prev) => ({ ...prev, [selectedCodePath]: false }))
+      setCodeDirty(false)
+      const tree = await getCodeTree(validProjectId)
+      setCodeTree(tree)
+      setGitStatus(await getGitStatus(validProjectId))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存代码失败')
+    } finally {
+      setCodeSaving(false)
+    }
+  }
+
+  async function handleInitGit() {
+    if (validProjectId === null || gitBusy) return
+    setGitBusy(true)
+    setError('')
+    try {
+      setGitStatus(await initGit(validProjectId))
+      setGitLog(await getGitLog(validProjectId))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '初始化 Git 失败')
+    } finally {
+      setGitBusy(false)
+    }
+  }
+
+  async function handleCommitGit() {
+    if (validProjectId === null || gitBusy || !gitMessage.trim()) return
+    setGitBusy(true)
+    setError('')
+    try {
+      await commitGit(validProjectId, gitMessage)
+      setGitMessage('')
+      setGitStatus(await getGitStatus(validProjectId))
+      setGitLog(await getGitLog(validProjectId))
+      setGitDiff('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Git 提交失败')
+    } finally {
+      setGitBusy(false)
+    }
+  }
+
+  async function handleViewDiff() {
+    if (validProjectId === null) return
+    setError('')
+    try {
+      setGitDiff(await getGitDiff(validProjectId))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '读取 Git diff 失败')
     }
   }
 
@@ -739,13 +855,15 @@ export default function ProjectWorkspacePage() {
   const startDisabled = selectedProviderId === null
 
   const canStartAt = (index: number) => {
-    if (!flow) {
-      return false
-    }
-    if (index === 0) {
-      return true
-    }
-    return flow.stages[index - 1].status === 'approved'
+    if (!flow) return false
+    const item = flow.stages[index]
+    if (!item) return false
+    return item.dependencies.every((dependency) =>
+      flow.stages.some(
+        ({ stage, status }) =>
+          stage.code === dependency && (status === 'approved' || status === 'completed'),
+      ),
+    )
   }
 
   const firstStage = flow?.stages[0]
@@ -882,8 +1000,27 @@ export default function ProjectWorkspacePage() {
       {flow && tab === 'code' && (
         <div className="surface-card mt-6 flex min-h-0 flex-1 flex-col p-5 lg:p-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-slate-900">生成代码</h2>
-            <div className="flex gap-2">
+            <div><h2 className="text-sm font-bold text-slate-900">代码工作区</h2><p className="mt-1 text-[11px] text-slate-400">{gitStatus?.is_repo ? `${gitStatus.branch} · ${gitStatus.changed_files} 个文件变更` : '未检测到 Git 仓库'}</p></div>
+            <div className="flex flex-wrap justify-end gap-2">
+              {!gitStatus?.is_repo && <button onClick={() => void handleInitGit()} disabled={gitBusy} className="secondary-action px-3 py-1.5 text-xs font-semibold">{gitBusy ? '初始化中...' : '初始化 Git'}</button>}
+              {gitStatus?.is_repo && <>
+                <input value={gitMessage} onChange={(event) => setGitMessage(event.target.value)} placeholder="提交说明..." className="field-control w-36 px-2.5 py-1.5 text-xs" />
+                <button onClick={() => void handleCommitGit()} disabled={gitBusy || !gitMessage.trim()} className="secondary-action px-3 py-1.5 text-xs font-semibold">提交</button>
+              </>}
+              <button
+                onClick={() => void handleSaveCode()}
+                disabled={!selectedCodePath || !codeDirty || codeSaving}
+                className="secondary-action px-3 py-1.5 text-xs font-semibold"
+              >
+                {codeSaving ? '保存中...' : '保存文件'}
+              </button>
+              <button
+                onClick={() => void handleViewDiff()}
+                disabled={!gitStatus?.is_repo}
+                className="secondary-action px-3 py-1.5 text-xs font-semibold"
+              >
+                查看 Diff
+              </button>
               <button
                 onClick={() => void handleRunCode('run')}
                 disabled={codeRunning !== null || !codeTree.exists}
@@ -921,11 +1058,28 @@ export default function ProjectWorkspacePage() {
                   </button>
                 ))}
               </div>
-              <div className="col-span-2">
+              <div className="code-editor-pane col-span-2">
+                {openCodePaths.length > 0 && (
+                  <div className="code-tabs">
+                    {openCodePaths.map((path) => (
+                      <button key={path} onClick={() => void handleViewCode(path)} className={selectedCodePath === path ? 'active' : ''}>{path.split('/').pop()}</button>
+                    ))}
+                    <span className="ml-auto text-[10px] text-slate-400">{codeDirty ? '未保存' : '已保存'}</span>
+                  </div>
+                )}
                 {selectedCodePath ? (
-                  <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap rounded-xl border border-slate-200 bg-slate-950 px-4 py-3 font-mono text-xs leading-6 text-slate-200">
-                    {codeContent}
-                  </pre>
+                  <textarea
+                    value={codeContent}
+                    onChange={(event) => {
+                      const nextContent = event.target.value
+                      setCodeContent(nextContent)
+                      setCodeDrafts((prev) => ({ ...prev, [selectedCodePath]: nextContent }))
+                      setCodeDirtyPaths((prev) => ({ ...prev, [selectedCodePath]: true }))
+                      setCodeDirty(true)
+                    }}
+                    spellCheck={false}
+                    className="code-editor-textarea"
+                  />
                 ) : (
                   <div className="flex h-full items-center justify-center rounded-md border border-dashed border-slate-300 text-sm text-slate-500">
                     选择左侧文件查看内容
@@ -939,6 +1093,22 @@ export default function ProjectWorkspacePage() {
               {codeOutput}
             </pre>
           )}
+          {gitDiff && (
+            <pre className="git-diff-panel mt-4 max-h-80 shrink-0 overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-xs leading-6">
+              {gitDiff}
+            </pre>
+          )}
+          {gitLog.length > 0 && <div className="git-log-panel mt-4 shrink-0"><div className="git-log-title">RECENT COMMITS</div>{gitLog.map((entry) => <div key={`${entry.commit}-${entry.date}`} className="git-log-row"><code>{entry.commit}</code><span>{entry.subject}</span><time>{entry.date}</time></div>)}</div>}
+          <div className="skills-panel mt-4 shrink-0">
+            <div className="skills-panel-heading"><span>PROJECT SKILLS</span><b>{skills.length} loaded</b></div>
+            {skills.length === 0 ? <p className="skills-empty">在项目的 .sdlc/skills、.opencode/skills 或 skills 目录放入 SKILL.md，即可加载项目规则。</p> : <div className="skills-list">{skills.map((skill) => <button key={skill.name} onClick={() => { if (validProjectId !== null) void getProjectSkill(validProjectId, skill.name).then(setSelectedSkill).catch(() => setError('读取 Skill 失败')) }} className={`skill-row ${selectedSkill?.name === skill.name ? 'active' : ''}`}><span className="skill-name">{skill.name}</span><span className="skill-description">{skill.description}</span><code>{skill.source}</code></button>)}</div>}
+            {selectedSkill && <pre className="skill-content">{selectedSkill.content}</pre>}
+          </div>
+          <div className="mcp-panel mt-4 shrink-0">
+            <div className="skills-panel-heading"><span>MCP SERVERS</span><b>{mcpServers.length} configured</b></div>
+            {mcpServers.length === 0 ? <p className="skills-empty">在项目的 .sdlc/mcp.json、.opencode/mcp.json 或 mcp.json 中配置本地 MCP Server。</p> : <div className="mcp-list">{mcpServers.map((server) => <div key={server.name} className="mcp-row"><div className="mcp-copy"><b>{server.name}</b><small>{server.type} · {server.enabled ? 'enabled' : 'disabled'} · {server.tools.length} tools</small></div><button onClick={async () => { if (validProjectId === null) return; setMcpBusy(server.name); try { const updated = await discoverProjectMcp(validProjectId, server.name); setMcpServers((prev) => prev.map((item) => item.name === server.name ? updated : item)) } catch { setError('MCP 工具发现失败') } finally { setMcpBusy(null) } }} disabled={mcpBusy === server.name || !server.enabled} className="secondary-action px-3 py-1.5 text-[10px] font-semibold">{mcpBusy === server.name ? '发现中...' : '发现工具'}</button></div>)}</div>}
+            {mcpServers.some((server) => server.tools.length > 0) && <div className="mcp-tools">{mcpServers.flatMap((server) => server.tools.map((tool) => <span key={`${server.name}:${tool.name}`} title={tool.description}>{server.name}/{tool.name}</span>))}</div>}
+          </div>
         </div>
       )}
 
