@@ -10,7 +10,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from app.db.session import SessionLocal
+from app.models.llm_provider import LLMProvider
 from app.models.project import Project
 
 _CONFIG_PATHS = (".sdlc/agents.json", ".opencode/agents.json", "agents.json")
@@ -73,3 +77,60 @@ def agent_context(project_id: int) -> str:
         f"## Agent: {item['name']}\n{item['description']}\nPermissions: {json.dumps(item['permissions'], ensure_ascii=False)}"
         for item in list_agent_profiles(project_id)
     )
+
+
+def get_agent_profile(project_id: int, agent_name: str) -> dict[str, Any] | None:
+    """按名称取单个 agent 档案，未配置时返回 None。"""
+    for profile in list_agent_profiles(project_id):
+        if profile["name"] == agent_name:
+            return profile
+    return None
+
+
+def _find_enabled_provider(db: Session, user_id: int, name: str) -> LLMProvider | None:
+    """按名称查找同一用户下已启用的 Provider（供 "provider/model" 写法使用）。"""
+    return db.scalar(
+        select(LLMProvider).where(
+            LLMProvider.user_id == user_id,
+            LLMProvider.name == name,
+            LLMProvider.enabled.is_(True),
+        )
+    )
+
+
+def resolve_agent_model(
+    db: Session,
+    project_id: int,
+    agent_code: str,
+    default_provider: LLMProvider,
+) -> tuple[LLMProvider, str]:
+    """解析某个 agent 角色实际生效的 ``(Provider, 模型名)``。
+
+    读取项目内 ``agents.json`` 的 ``model`` 字段，支持两种写法：
+
+    - ``"model-name"``：沿用传入的 Provider，仅覆盖模型名。
+    - ``"provider-name/model-name"``：切换到同一用户下同名的 Provider 并使用该模型；
+      Provider 不存在或已停用时，退化为「沿用当前 Provider + 该模型名」。
+
+    未配置 model、写法为空或无法解析时，回退到 Provider 的默认模型。
+    """
+    fallback: tuple[LLMProvider, str] = (default_provider, default_provider.default_model)
+
+    profile = get_agent_profile(project_id, agent_code)
+    if profile is None:
+        return fallback
+
+    raw = str(profile.get("model") or "").strip()
+    if not raw:
+        return fallback
+
+    if "/" in raw:
+        provider_name, _, model_name = raw.partition("/")
+        provider_name = provider_name.strip()
+        model_name = model_name.strip()
+        if not model_name:
+            return fallback
+        candidate = _find_enabled_provider(db, default_provider.user_id, provider_name)
+        return (candidate or default_provider), model_name
+
+    return default_provider, raw

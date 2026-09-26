@@ -37,6 +37,7 @@ from app.services.code_service import (
     run_verify,
     write_files,
 )
+from app.services.agents import resolve_agent_model
 from app.services.coding_agent import run_coding_harness
 from app.services.artifact_file import write_artifact_file
 from app.services.traceability import rebuild_traceability
@@ -112,6 +113,40 @@ STAGE_AGENT_CODE: dict[str, str] = {
     "sprint-retrospective": "coordinator",
 }
 
+# 评审节点固定使用 reviewer 角色的模型配置，与生成节点解耦。
+REVIEWER_AGENT_CODE = "reviewer"
+
+# 未知阶段回退到统筹角色。
+DEFAULT_AGENT_CODE = "coordinator"
+
+
+def stage_agent_code(stage_code: str) -> str:
+    """阶段 → 负责该阶段的 agent 角色编码。"""
+    return STAGE_AGENT_CODE.get(stage_code, DEFAULT_AGENT_CODE)
+
+
+def resolve_stage_agent(
+    provider: LLMProvider,
+    stage_code: str,
+    project_id: int,
+    db: Session,
+) -> tuple[LLMProvider, str]:
+    """解析阶段所用角色实际生效的 (Provider, 模型名)。"""
+    return resolve_agent_model(db, project_id, stage_agent_code(stage_code), provider)
+
+
+def resolve_reviewer_agent(
+    provider: LLMProvider,
+    project_id: int,
+    db: Session,
+) -> tuple[LLMProvider, str]:
+    """解析评审 Agent 实际生效的 (Provider, 模型名)。
+
+    评审与生成使用不同角色，因此可以配置不同模型（例如用更强的模型做审查）。
+    """
+    return resolve_agent_model(db, project_id, REVIEWER_AGENT_CODE, provider)
+
+
 # 文档保存前的必需内容关键词（与 prompts.STAGE_STRUCTURE 呼应）。
 _STAGE_REQUIRED_HINTS: dict[str, tuple[str, ...]] = {
     "requirements": ("需求", "验收"),
@@ -141,6 +176,7 @@ class AgentState(TypedDict):
     project_name: str
     project_description: str
     previous_artifacts: str
+    model_name: str
     output: str
     error_info: str
     attempts: int
@@ -187,7 +223,13 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  #
                 f"\n\n上次输出未通过校验：\n{current['error_info']}\n"
                 "请修正后完整重新输出全部章节。"
             )
-        content = _invoke_llm(provider, system, user, max_tokens=2000)
+        content = _invoke_llm(
+            provider,
+            system,
+            user,
+            max_tokens=2000,
+            model_name=current.get("model_name"),
+        )
         return {"output": content, "attempts": attempt}
 
     def check_quality_node(current: AgentState) -> dict:
@@ -265,8 +307,17 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  #
             content=current.get("output", ""),
             traceability_summary=current.get("traceability_summary", ""),
         )
+        review_provider, review_model = resolve_reviewer_agent(
+            provider, current["project_id"], db
+        )
         try:
-            suggestion = _invoke_llm(provider, system, user, max_tokens=1200)
+            suggestion = _invoke_llm(
+                review_provider,
+                system,
+                user,
+                max_tokens=1200,
+                model_name=review_model,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("评审 Agent 执行失败: stage_run_id=%s", run.id)
             suggestion = f"评审 Agent 执行失败：{exc}"
@@ -331,10 +382,11 @@ def _invoke_llm(
     system: str,
     user: str,
     max_tokens: int = 1500,
+    model_name: str | None = None,
 ) -> str:
     client = build_openai_client(provider)
     completion = client.chat.completions.create(
-        model=provider.default_model,
+        model=model_name or provider.default_model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -351,16 +403,18 @@ def _stream_llm(
     on_delta,
     temperature: float = 0.4,
     max_tokens: int = 900,
+    model_name: str | None = None,
 ) -> str:
     """流式调用 LLM；通过 on_delta 回调逐段推送，返回完整文本。
 
     若 Provider 不支持流式，则回退到一次性调用，保证功能可用。
     """
+    resolved_model = model_name or provider.default_model
     client = build_openai_client(provider)
     chunks: list[str] = []
     try:
         stream = client.chat.completions.create(
-            model=provider.default_model,
+            model=resolved_model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -378,7 +432,7 @@ def _stream_llm(
     except Exception:  # noqa: BLE001
         logger.warning("流式调用失败，回退为非流式", exc_info=True)
     completion = client.chat.completions.create(
-        model=provider.default_model,
+        model=resolved_model,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
@@ -392,9 +446,10 @@ def execute_code_stage(
     run: StageRun,
     provider: LLMProvider,
     db: Session,
+    model_name: str | None = None,
 ) -> None:
     if stage.code == "coding":
-        execute_coding_harness_stage(stage, project, run, provider, db)
+        execute_coding_harness_stage(stage, project, run, provider, db, model_name)
         return
 
     run.status = "generating"
@@ -448,6 +503,7 @@ def execute_code_stage(
             system,
             user,
             max_tokens=5000 if stage.code == "coding" else 2500,
+            model_name=model_name,
         )
         target = "code" if stage.code == "coding" else "tests"
         try:
@@ -528,6 +584,7 @@ def execute_coding_harness_stage(
     run: StageRun,
     provider: LLMProvider,
     db: Session,
+    model_name: str | None = None,
 ) -> None:
     run.status = "generating"
     run.started_at = datetime.now()
@@ -569,6 +626,7 @@ def execute_coding_harness_stage(
         project_description=project.description,
         previous_artifacts=previous_artifacts,
         max_turns=8,
+        model_name=model_name,
     )
     tree = list_code_files(project.id)
     files_md = "\n".join(f"- {item.path}" for item in tree.files)
@@ -665,14 +723,25 @@ def execute_stage_run(stage_run_id: int) -> None:
             stage = db.get(Stage, run.stage_id)
             project = db.get(Project, run.project_id)
             provider = db.get(LLMProvider, run.provider_id)
-            model_name = provider.default_model if provider is not None else None
             if stage is None or project is None:
                 raise ValueError("阶段或项目不存在")
             if provider is None or not provider.enabled:
                 raise ValueError("请先配置可用的模型 Provider")
 
+            # 按「阶段 → 角色 → agents.json」解析生效模型，未配置时回退默认模型。
+            agent_code = stage_agent_code(stage.code)
+            provider, model_name = resolve_stage_agent(
+                provider, stage.code, project.id, db
+            )
+            logger.info(
+                "阶段执行使用模型: stage=%s agent=%s model=%s",
+                stage.code,
+                agent_code,
+                model_name,
+            )
+
             if is_code_stage(stage.code):
-                execute_code_stage(stage, project, run, provider, db)
+                execute_code_stage(stage, project, run, provider, db, model_name)
                 return
 
             run.status = "generating"
@@ -682,7 +751,7 @@ def execute_stage_run(stage_run_id: int) -> None:
                     project_id=project.id,
                     stage_run_id=run.id,
                     event_type="agent_started",
-                    message=f"{stage.name}阶段已开始",
+                    message=f"{stage.name}阶段已开始（{agent_code} · {model_name}）",
                 )
             )
             db.commit()
@@ -694,7 +763,13 @@ def execute_stage_run(stage_run_id: int) -> None:
             publish(
                 project.id,
                 "agent_started",
-                {"stage_run_id": run.id, "agent_code": stage.code, "message": stage.name},
+                {
+                    "stage_run_id": run.id,
+                    "agent_code": stage.code,
+                    "agent_role": agent_code,
+                    "model": model_name,
+                    "message": stage.name,
+                },
             )
 
             previous_rows = list(
@@ -716,6 +791,7 @@ def execute_stage_run(stage_run_id: int) -> None:
                 "project_name": project.name,
                 "project_description": project.description,
                 "previous_artifacts": previous_artifacts,
+                "model_name": model_name or provider.default_model,
                 "output": "",
                 "error_info": "",
                 "attempts": 0,
@@ -850,7 +926,11 @@ def send_interview_reply(run: StageRun, db: Session) -> Message:
             {"stage_run_id": run.id, "content": piece},
         )
 
-    reply = _stream_llm(provider, messages, on_delta) or "请继续补充本阶段信息。"
+    _, chat_model = resolve_stage_agent(provider, stage_code, run.project_id, db)
+    reply = (
+        _stream_llm(provider, messages, on_delta, model_name=chat_model)
+        or "请继续补充本阶段信息。"
+    )
     message = Message(
         project_id=run.project_id,
         stage_run_id=run.id,
@@ -932,11 +1012,14 @@ def confirm_stage(run: StageRun, db: Session) -> StageRun:
 
     content = ""
     reason = ""
+    _, confirm_model = resolve_stage_agent(provider, stage.code, run.project_id, db)
     for attempt in range(1, _MAX_DOC_ATTEMPTS + 1):
         prompt = user_prompt
         if reason:
             prompt += f"\n\n上次输出未通过校验：\n{reason}\n请修正后完整重新输出。"
-        content = _invoke_llm(provider, system, prompt, max_tokens=2000)
+        content = _invoke_llm(
+            provider, system, prompt, max_tokens=2000, model_name=confirm_model
+        )
         reason = validate_document(stage.code, content)
         if not reason:
             break
@@ -1012,7 +1095,12 @@ def _suggest_review_for_run(
             stage_name=stage.name,
             content=artifact.content_md,
         )
-        suggestion = _invoke_llm(provider, system, user, max_tokens=1200).strip()
+        review_provider, review_model = resolve_reviewer_agent(
+            provider, run.project_id, db
+        )
+        suggestion = _invoke_llm(
+            review_provider, system, user, max_tokens=1200, model_name=review_model
+        ).strip()
     except Exception as exc:  # noqa: BLE001
         logger.exception("评审 Agent 执行失败: stage_run_id=%s", run.id)
         suggestion = f"评审 Agent 执行失败：{exc}"

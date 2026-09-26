@@ -25,3 +25,6 @@ logs/
 *.log
 .DS_Store
 Thumbs.db
+
+# 工具工作区（Agent 记忆等本地数据，不属于项目交付物）
+.workbuddy/

@@ -270,8 +270,10 @@ def run_coding_harness(
     project_description: str,
     previous_artifacts: str,
     max_turns: int = 8,
+    model_name: str | None = None,
 ) -> CodingResult:
     client = build_openai_client(provider)
+    resolved_model = model_name or provider.default_model
     system = (
         "你是一个编码 Agent，负责在给定工作区中创建可运行的 Python FastAPI 项目。"
         "你必须通过工具完成文件读写和验证，禁止输出 Markdown 代码围栏，"
@@ -297,7 +299,7 @@ def run_coding_harness(
 
     for turn in range(max_turns):
         response = client.chat.completions.create(
-            model=provider.default_model,
+            model=resolved_model,
             messages=messages,
             tools=TOOLS,
             tool_choice="auto",
