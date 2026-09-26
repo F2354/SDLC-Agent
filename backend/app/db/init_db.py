@@ -22,8 +22,31 @@ def _ensure_project_columns() -> None:
             )
 
 
+def _ensure_stage_run_columns() -> None:
+    """为既有 SQLite 库补齐 stage_runs 的新增列。"""
+    with engine.begin() as conn:
+        columns = [
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(stage_runs)")
+        ]
+        if not columns:
+            return
+        if "agent_code" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE stage_runs ADD COLUMN agent_code VARCHAR(50)"
+            )
+        if "model_name" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE stage_runs ADD COLUMN model_name VARCHAR(120)"
+            )
+        if "tool_usage_json" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE stage_runs ADD COLUMN tool_usage_json TEXT"
+            )
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_project_columns()
+    _ensure_stage_run_columns()
     with SessionLocal() as db:
         seed_all(db)

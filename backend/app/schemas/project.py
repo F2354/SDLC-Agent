@@ -55,11 +55,23 @@ class ProjectOut(BaseModel):
     updated_at: datetime
 
 
+class ToolUsageOut(BaseModel):
+    tool: str
+    count: int
+
+
 class ProjectFlowStage(BaseModel):
     stage: StageOut
     status: str
     stage_run_id: int | None = None
     dependencies: list[str] = []
+    # 过程模型视图所需：这一阶段由谁执行、用什么模型、调了哪些工具、与谁并行。
+    agent_role: str | None = None
+    agent_role_name: str | None = None
+    model: str | None = None
+    tool_usage: list[ToolUsageOut] = []
+    tool_call_count: int = 0
+    parallel_peers: list[str] = []
 
 
 class ProjectFlowOut(BaseModel):

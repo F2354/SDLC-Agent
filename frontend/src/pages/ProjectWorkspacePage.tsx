@@ -48,6 +48,7 @@ import {
   type ProjectFlow,
   type Provider,
   type Review,
+  type ToolUsage,
   type Traceability,
 } from '../lib/api'
 
@@ -132,29 +133,30 @@ type ProcessFlowProps = {
   starting: string | null
   canStartAt: (index: number) => boolean
   onStart: (stageCode: string, mode: 'auto' | 'chat') => void
+  /** 运行中的工具调用（来自 agent_tool 事件），按 stage_run_id 归档。 */
+  liveTools: Record<number, ToolUsage[]>
   className?: string
 }
 
 type FlowNodeProps = ProcessFlowProps & {
-  stage: ProjectFlow['stages'][number]['stage']
-  status: string
+  item: ProjectFlow['stages'][number]
   index: number
 }
 
-function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart }: ProcessFlowProps) {
+function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart, liveTools }: ProcessFlowProps) {
   const model = flow.process_model.code
   const stages = flow.stages
   const renderNode = (item: ProjectFlow['stages'][number], index: number, className = '') => (
     <FlowNode
       key={item.stage.code}
       flow={flow}
-      stage={item.stage}
-      status={item.status}
+      item={item}
       index={index}
       startDisabled={startDisabled}
       starting={starting}
       canStartAt={canStartAt}
       onStart={onStart}
+      liveTools={liveTools}
       className={className}
     />
   )
@@ -309,16 +311,34 @@ function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart }: Pro
   )
 }
 
-function FlowNode({ stage, status, index, startDisabled, starting, canStartAt, onStart, className = '' }: FlowNodeProps) {
+function FlowNode({ item, index, startDisabled, starting, canStartAt, onStart, liveTools, className = '' }: FlowNodeProps) {
+  const { stage, status, stage_run_id, agent_role_name, model, tool_usage, tool_call_count, parallel_peers } = item
   const agent = getAgent(stage.code)
+  const roleName = agent_role_name ?? agent.name
   const canStart = status === 'pending' && canStartAt(index)
   const canChat = !CODE_STAGES.has(stage.code)
   const retry = status === 'rejected' || status === 'verification_failed'
+  // 运行中优先展示实时工具调用；运行结束后回落到已落库的统计。
+  const live = stage_run_id != null ? liveTools[stage_run_id] : undefined
+  const running = status === 'generating' || status === 'collecting'
+  const usage = running && live && live.length > 0 ? live : tool_usage
+  const total = running && live && live.length > 0 ? live.reduce((sum, tool) => sum + tool.count, 0) : tool_call_count
+  const topTools = usage.slice(0, 3)
   return (
     <div className={`flow-node ${flowStatusClass(status)} ${className}`} title={stage.description || stage.name}>
       <div className="flow-node-topline"><span className="flow-node-index">{String(index + 1).padStart(2, '0')}</span><span className="flow-node-status">{statusLabels[status] ?? status}</span></div>
       <div className="flow-node-title">{stage.name}</div>
-      <div className="flow-node-agent"><span className="flow-agent-icon">{agent.icon}</span><span>{agent.name}</span><b>{agent.short}</b></div>
+      <div className="flow-node-agent"><span className="flow-agent-icon">{agent.icon}</span><span>{roleName}</span><b>{agent.short}</b></div>
+      {model && <div className="flow-node-model" title="执行模型">{model}</div>}
+      {topTools.length > 0 && (
+        <div className={`flow-node-tools${running ? ' is-live' : ''}`} title={`共 ${total} 次工具调用`}>
+          {topTools.map((entry) => <span className="flow-tool-chip" key={entry.tool}>{entry.tool}<i>×{entry.count}</i></span>)}
+          {usage.length > topTools.length && <span className="flow-tool-more">+{usage.length - topTools.length}</span>}
+        </div>
+      )}
+      {parallel_peers.length > 0 && status !== 'pending' && (
+        <div className="flow-node-parallel" title={`与该阶段并行执行：${parallel_peers.join('、')}`}>并行通道 ×{parallel_peers.length + 1}</div>
+      )}
       {(canStart || retry) && <div className="flow-node-actions">{canStart && canChat && <button onClick={() => onStart(stage.code, 'chat')} disabled={starting === stage.code || startDisabled}>对话</button>}<button onClick={() => onStart(stage.code, 'auto')} disabled={starting === stage.code || startDisabled}>{starting === stage.code ? '启动中' : retry ? '重试' : '自动'}</button></div>}
     </div>
   )
@@ -369,6 +389,8 @@ export default function ProjectWorkspacePage() {
   const [reviewingId, setReviewingId] = useState<number | null>(null)
   const [reviews, setReviews] = useState<Review[]>([])
   const [autoAdvance, setAutoAdvance] = useState(false)
+  // 运行中的工具调用流水，按 stage_run_id 归档，用于过程模型节点的实时展示。
+  const [liveToolCalls, setLiveToolCalls] = useState<Record<number, ToolUsage[]>>({})
   const [savingAutoAdvance, setSavingAutoAdvance] = useState(false)
   // SSE 实时状态：已连接时不再轮询；message_delta 用于逐段渲染 agent 回复。
   const [liveConnected, setLiveConnected] = useState(false)
@@ -483,6 +505,24 @@ export default function ProjectWorkspacePage() {
       if (!mountedRef.current) return
       setStreamingText('')
       scheduleReload()
+    })
+    // 工具调用逐条到达：直接累加到对应阶段节点上，让过程模型实时可见。
+    source.addEventListener('agent_tool', (event) => {
+      const data = JSON.parse((event as MessageEvent).data) as {
+        stage_run_id: number | null
+        tool: string
+      }
+      if (!mountedRef.current || data.stage_run_id == null) return
+      setLiveToolCalls((prev) => {
+        const current = prev[data.stage_run_id as number] ?? []
+        const hit = current.find((entry) => entry.tool === data.tool)
+        const next = hit
+          ? current.map((entry) =>
+              entry.tool === data.tool ? { ...entry, count: entry.count + 1 } : entry,
+            )
+          : [...current, { tool: data.tool, count: 1 }]
+        return { ...prev, [data.stage_run_id as number]: next }
+      })
     })
     for (const name of REFRESH_EVENTS) {
       source.addEventListener(name, scheduleReload)
@@ -1114,7 +1154,7 @@ export default function ProjectWorkspacePage() {
 
       {flow && tab === 'stages' && (
         <div className="process-flow-section">
-          <ProcessFlow flow={flow} startDisabled={startDisabled} starting={starting} canStartAt={canStartAt} onStart={(stageCode, mode) => void handleStart(stageCode, mode)} />
+          <ProcessFlow flow={flow} startDisabled={startDisabled} starting={starting} canStartAt={canStartAt} onStart={(stageCode, mode) => void handleStart(stageCode, mode)} liveTools={liveToolCalls} />
         </div>
       )}
 

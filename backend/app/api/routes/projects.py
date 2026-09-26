@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from pathlib import Path
@@ -20,6 +21,7 @@ from app.schemas.project import (
     ProjectOut,
     ProjectUpdate,
     StageOut,
+    ToolUsageOut,
 )
 from app.schemas.stage import (
     ActivityEventOut,
@@ -37,7 +39,8 @@ from app.services.stage_service import (
     start_stage_run_async,
 )
 from app.services.traceability import compute_traceability
-from app.services.process_graph import get_stage_dependencies
+from app.services.agent_roles import get_role_spec
+from app.services.process_graph import get_parallel_siblings, get_stage_dependencies
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -361,6 +364,48 @@ def project_stats(
     )
 
 
+def _parse_tool_usage(raw: str | None) -> list[ToolUsageOut]:
+    """把运行上记录的 JSON 工具统计转成可排序的输出列表。"""
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    items = [
+        ToolUsageOut(tool=str(tool), count=int(count))
+        for tool, count in payload.items()
+        if isinstance(count, int) and count > 0
+    ]
+    return sorted(items, key=lambda item: (-item.count, item.tool))
+
+
+def _build_flow_stage(
+    stage: Stage,
+    run: StageRun | None,
+    model_code: str,
+    stage_codes: list[str],
+) -> ProjectFlowStage:
+    """把阶段定义与其最近一次运行合成流程节点，供过程模型视图使用。"""
+    role_code = run.agent_code if run is not None else None
+    role_name = get_role_spec(role_code).name if role_code else None
+    tool_usage = _parse_tool_usage(run.tool_usage_json if run is not None else None)
+    return ProjectFlowStage(
+        stage=StageOut.model_validate(stage),
+        status=run.status if run is not None else "pending",
+        stage_run_id=run.id if run is not None else None,
+        dependencies=get_stage_dependencies(model_code, stage.code, stage_codes),
+        agent_role=role_code,
+        agent_role_name=role_name,
+        model=run.model_name if run is not None else None,
+        tool_usage=tool_usage,
+        tool_call_count=sum(item.count for item in tool_usage),
+        parallel_peers=get_parallel_siblings(model_code, stage.code, stage_codes),
+    )
+
+
 @router.get("/{project_id}/flow", response_model=ProjectFlowOut)
 def project_flow(
     project_id: int,
@@ -386,21 +431,16 @@ def project_flow(
     for run in runs:
         if run.stage_id not in latest_runs:
             latest_runs[run.stage_id] = run
+    stage_codes = [item.code for item in stages]
     return ProjectFlowOut(
         process_model=project.process_model,
         auto_advance=project.auto_advance,
         stages=[
-            ProjectFlowStage(
-                stage=StageOut.model_validate(stage),
-                status=latest_runs[stage.id].status
-                if stage.id in latest_runs
-                else "pending",
-                stage_run_id=latest_runs[stage.id].id if stage.id in latest_runs else None,
-                dependencies=get_stage_dependencies(
-                    project.process_model.code,
-                    stage.code,
-                    [item.code for item in stages],
-                ),
+            _build_flow_stage(
+                stage,
+                latest_runs.get(stage.id),
+                project.process_model.code,
+                stage_codes,
             )
             for stage in stages
         ],

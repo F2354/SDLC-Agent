@@ -1,4 +1,5 @@
 import atexit
+import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -764,19 +765,34 @@ def execute_coding_harness_stage(
         max_turns=8,
         model_name=model_name,
         agent_code=agent_code,
+        stage_run_id=run.id,
     )
+    if result.tool_usage:
+        run.tool_usage_json = json.dumps(result.tool_usage, ensure_ascii=False)
     target = role.write_target or "code"
     tree = list_code_files(project.id, target)
     files_md = "\n".join(f"- {item.path}" for item in tree.files)
     verify_md = result.verify.output if result.verify else "无运行结果"
     tests_md = result.tests.output if result.tests else "无测试结果"
+    usage_md = (
+        "、".join(f"{tool}×{count}" for tool, count in sorted(result.tool_usage.items()))
+        or "（无）"
+    )
+    log_md = (
+        "\n".join(f"{index}. {line}" for index, line in enumerate(result.tool_log, start=1))
+        or "（无）"
+    )
     content_md = (
         f"# {stage.name}产物\n\n"
-        f"执行角色：{role.name}（{agent_code}）\n\n"
+        f"执行角色：{role.name}（{agent_code}）\n"
+        f"使用模型：{model_name or '（Provider 默认）'}\n\n"
         f"生成文件（{target}/）：\n{files_md or '（无）'}\n\n"
+        f"## 工具调用（共 {sum(result.tool_usage.values())} 次）\n\n"
+        f"统计：{usage_md}\n\n"
+        f"轨迹：\n{log_md}\n\n"
         f"## 运行验证\n\n{verify_md}\n\n"
         f"## 测试结果\n\n{tests_md}\n\n"
-        f"最终状态：{'通过' if result.ok else '未完全通过'}，共 {result.turn_count} 轮工具调用。"
+        f"最终状态：{'通过' if result.ok else '未完全通过'}，共 {result.turn_count} 轮。"
     )
 
     artifact = Artifact(
@@ -877,6 +893,9 @@ def execute_stage_run(stage_run_id: int) -> None:
             provider, model_name = resolve_stage_agent(
                 provider, stage.code, project.id, db
             )
+            # 记录到运行上，供过程模型视图展示"谁用哪个模型在干活"。
+            run.agent_code = agent_code
+            run.model_name = model_name
             logger.info(
                 "阶段执行使用模型: stage=%s agent=%s model=%s",
                 stage.code,

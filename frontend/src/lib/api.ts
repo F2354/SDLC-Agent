@@ -105,11 +105,26 @@ export interface Project {
   updated_at: string
 }
 
+export interface ToolUsage {
+  tool: string
+  count: number
+}
+
 export interface ProjectFlowStage {
   stage: Stage
   status: string
   stage_run_id: number | null
   dependencies: string[]
+  /** 实际执行该阶段的 agent 角色（来自运行记录，未运行时为空）。 */
+  agent_role: string | null
+  agent_role_name: string | null
+  /** 该阶段实际使用的模型。 */
+  model: string | null
+  /** 工具循环的调用统计。 */
+  tool_usage: ToolUsage[]
+  tool_call_count: number
+  /** 与该阶段并行的其它阶段编码。 */
+  parallel_peers: string[]
 }
 
 export interface ProjectFlow {

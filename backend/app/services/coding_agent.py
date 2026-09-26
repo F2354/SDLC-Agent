@@ -1,6 +1,6 @@
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.core.config import settings
@@ -33,6 +33,7 @@ from app.services.code_service import (
     write_code_file,
     write_many_files,
 )
+from app.services.event_bus import publish
 from app.services.llm_service import build_openai_client
 from app.services.skills import skill_context
 
@@ -252,6 +253,9 @@ class CodingResult:
     verify: object
     tests: object
     turn_count: int
+    # 工具调用统计与可读日志，供过程模型视图展示"谁用什么工具干了什么"。
+    tool_usage: dict[str, int] = field(default_factory=dict)
+    tool_log: list[str] = field(default_factory=list)
 
 
 # 允许通过 `python -m` 执行的模块白名单。
@@ -484,6 +488,37 @@ def _agent_goal_reached(agent_code: str, verify, tests) -> bool:
     return True
 
 
+_GIT_TOOL_LABELS = {
+    "git_status": "查看 Git 状态",
+    "git_diff": "查看代码差异",
+    "git_log": "查看提交历史",
+    "git_commit": "提交改动",
+}
+
+
+def _summarize_tool_call(name: str, args: dict, result: dict) -> str:
+    """把一次工具调用压缩成一行可读摘要，用于事件流与过程模型视图。"""
+    if name == "list_files":
+        count = len(result.get("files") or [])
+        return f"列出 {args.get('target') or 'code'}/ 下 {count} 个文件"
+    if name == "read_file":
+        return f"读取 {args.get('path', '')}"
+    if name in {"write_file", "edit_file"}:
+        verb = "写入" if name == "write_file" else "修改"
+        return f"{verb} {args.get('path', '')}"
+    if name == "write_files":
+        return f"批量写入 {result.get('count', 0)} 个文件"
+    if name == "edit_files":
+        return f"跨文件替换 {result.get('count', 0)} 个文件"
+    if name == "run_command":
+        return f"执行命令：{args.get('command', '')}"
+    if name == "run_tests":
+        return "运行测试：" + ("通过" if result.get("ok") else "未通过")
+    if name in _GIT_TOOL_LABELS:
+        return _GIT_TOOL_LABELS[name]
+    return name
+
+
 # 各角色在工具循环中的任务描述。
 _ROLE_TASKS: dict[str, str] = {
     "developer": (
@@ -525,6 +560,7 @@ def run_coding_harness(
     max_turns: int = 8,
     model_name: str | None = None,
     agent_code: str = "developer",
+    stage_run_id: int | None = None,
 ) -> CodingResult:
     client = build_openai_client(provider)
     resolved_model = model_name or provider.default_model
@@ -548,6 +584,8 @@ def run_coding_harness(
     tools = tools_for_agent(agent_code)
     verify = None
     tests = None
+    tool_usage: dict[str, int] = {}
+    tool_log: list[str] = []
 
     for turn in range(max_turns):
         response = client.chat.completions.create(
@@ -582,7 +620,25 @@ def run_coding_harness(
                     args = json.loads(tool_call.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = execute_tool(project_id, tool_call.function.name, args, agent_name=agent_code)
+                tool_name = tool_call.function.name
+                result = execute_tool(
+                    project_id, tool_name, args, agent_name=agent_code
+                )
+                tool_usage[tool_name] = tool_usage.get(tool_name, 0) + 1
+                summary = _summarize_tool_call(tool_name, args, result)
+                tool_log.append(summary)
+                # 实时广播，使前端能在过程模型上看到 agent 正在用什么工具。
+                publish(
+                    project_id,
+                    "agent_tool",
+                    {
+                        "stage_run_id": stage_run_id,
+                        "agent_role": agent_code,
+                        "tool": tool_name,
+                        "ok": bool(result.get("ok")),
+                        "summary": summary,
+                    },
+                )
                 messages.append(
                     {
                         "role": "tool",
@@ -593,7 +649,14 @@ def run_coding_harness(
             verify = run_verify(project_id)
             tests = run_stage_tests(project_id)
             if _agent_goal_reached(agent_code, verify, tests):
-                return CodingResult(ok=True, verify=verify, tests=tests, turn_count=turn + 1)
+                return CodingResult(
+                    ok=True,
+                    verify=verify,
+                    tests=tests,
+                    turn_count=turn + 1,
+                    tool_usage=tool_usage,
+                    tool_log=tool_log,
+                )
             messages.append(
                 {
                     "role": "user",
@@ -609,7 +672,14 @@ def run_coding_harness(
             verify = run_verify(project_id)
             tests = run_stage_tests(project_id)
             if _agent_goal_reached(agent_code, verify, tests):
-                return CodingResult(ok=True, verify=verify, tests=tests, turn_count=turn + 1)
+                return CodingResult(
+                    ok=True,
+                    verify=verify,
+                    tests=tests,
+                    turn_count=turn + 1,
+                    tool_usage=tool_usage,
+                    tool_log=tool_log,
+                )
             if turn < max_turns - 1:
                 messages.append(
                     {
@@ -618,4 +688,11 @@ def run_coding_harness(
                     }
                 )
 
-    return CodingResult(ok=False, verify=verify, tests=tests, turn_count=max_turns)
+    return CodingResult(
+        ok=False,
+        verify=verify,
+        tests=tests,
+        turn_count=max_turns,
+        tool_usage=tool_usage,
+        tool_log=tool_log,
+    )
