@@ -15,6 +15,7 @@ from app.models.user import User
 from app.schemas.stage import ArtifactOut, ArtifactUpdate
 from app.services.artifact_file import write_artifact_file
 from app.services.export import artifact_to_docx, artifact_to_pdf
+from app.services.stage_service import commit_stage_progress
 from app.services.traceability import rebuild_traceability
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -60,6 +61,8 @@ def update_artifact(
         write_artifact_file(artifact.project_id, artifact)
     except Exception:  # noqa: BLE001
         logger.exception("文档产物写文件失败")
+    # 人工修订同样进入 Git 轨迹，便于回溯"谁在什么时候改了什么"。
+    commit_stage_progress(db, artifact.project_id, artifact.type, "人工修订已保存")
     return artifact
 
 

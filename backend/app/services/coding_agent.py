@@ -9,7 +9,11 @@ from app.services.agents import get_agent_permissions
 from app.services.code_service import (
     _PACKAGE_NAME_RE,
     code_root,
+    commit_project_changes,
     edit_code_file,
+    git_diff,
+    git_log,
+    git_status,
     list_code_files,
     project_python,
     read_code_file,
@@ -100,7 +104,63 @@ TOOLS = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "查看项目工作区的 Git 状态（分支、未提交的变更文件）。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "查看项目工作区未提交的代码差异。",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_log",
+            "description": "查看项目工作区的提交历史，用于了解此前各阶段的进展。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回的提交条数，默认 10，最大 50。",
+                    }
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": (
+                "把当前工作区的改动提交为一个 Git 提交。"
+                "仓库尚未初始化时会自动初始化。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "提交说明。"}
+                },
+                "required": ["message"],
+            },
+        },
+    },
 ]
+
+# Git 工具统一走 git 权限键，与 read / edit / bash 区分。
+_GIT_TOOLS = frozenset({"git_status", "git_diff", "git_log", "git_commit"})
+
+_READ_TOOLS = frozenset({"list_files", "read_file"})
+_EDIT_TOOLS = frozenset({"write_file", "edit_file"})
 
 
 @dataclass
@@ -227,7 +287,14 @@ def _execute_command(project_id: int, command: str, timeout: int = 15) -> dict:
 
 def execute_tool(project_id: int, name: str, args: dict, agent_name: str = "developer") -> dict:
     try:
-        permission_key = "read" if name in {"list_files", "read_file"} else "edit" if name in {"write_file", "edit_file"} else "bash"
+        if name in _READ_TOOLS:
+            permission_key = "read"
+        elif name in _EDIT_TOOLS:
+            permission_key = "edit"
+        elif name in _GIT_TOOLS:
+            permission_key = "git"
+        else:
+            permission_key = "bash"
         permission = get_agent_permissions(project_id, agent_name).get(permission_key, "ask")
         if permission == "deny":
             return {"ok": False, "error": f"Agent {agent_name} 没有 {permission_key} 工具权限"}
@@ -252,6 +319,21 @@ def execute_tool(project_id: int, name: str, args: dict, agent_name: str = "deve
         if name == "run_tests":
             result = run_stage_tests(project_id)
             return {"ok": result.ok, "phase": result.phase, "output": result.output[:2000]}
+        if name == "git_status":
+            return {"ok": True, **git_status(project_id)}
+        if name == "git_diff":
+            return {"ok": True, "diff": git_diff(project_id)[:4000]}
+        if name == "git_log":
+            try:
+                limit = int(args.get("limit") or 10)
+            except (TypeError, ValueError):
+                limit = 10
+            return {"ok": True, "commits": git_log(project_id, limit)}
+        if name == "git_commit":
+            message = str(args.get("message") or "").strip()
+            if not message:
+                return {"ok": False, "error": "提交说明不能为空"}
+            return {"ok": True, **commit_project_changes(project_id, message)}
         return {"ok": False, "error": f"未知工具: {name}"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:2000]}
@@ -279,6 +361,8 @@ def run_coding_harness(
         "你必须通过工具完成文件读写和验证，禁止输出 Markdown 代码围栏，"
         "禁止使用 passlib，requirements.txt 不写版本号。"
         "工作步骤建议：写文件，然后运行验证，最后运行测试。"
+        "可用 git_status / git_diff / git_log 查看工作区现状与历史进展；"
+        "阶段结束时系统会自动提交产物，无需手动调用 git_commit。"
     )
     skills = skill_context(project_id, "FastAPI Python coding testing Git", limit=4)
     user = (

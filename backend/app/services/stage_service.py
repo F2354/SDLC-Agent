@@ -32,6 +32,7 @@ from app.services.prompts import (
     build_stage_prompt,
 )
 from app.services.code_service import (
+    commit_project_changes,
     list_code_files,
     run_stage_tests,
     run_verify,
@@ -145,6 +146,65 @@ def resolve_reviewer_agent(
     评审与生成使用不同角色，因此可以配置不同模型（例如用更强的模型做审查）。
     """
     return resolve_agent_model(db, project_id, REVIEWER_AGENT_CODE, provider)
+
+
+def commit_stage_progress(
+    db: Session,
+    project_id: int,
+    stage_code: str,
+    action: str,
+) -> None:
+    """把阶段产物落盘后的项目状态提交为一次 Git 提交。
+
+    提交信息形如 ``[waterfall 3/5] 详细设计 · 文档已生成``，使 ``git log``
+    直接呈现过程模型的执行轨迹，而不是一堆无语义的快照。
+
+    Git 失败只记录日志，绝不影响阶段执行本身。
+    """
+    try:
+        project = db.get(Project, project_id)
+        if project is None:
+            return
+        model_code = project.process_model.code if project.process_model else ""
+
+        stages: list[Stage] = []
+        if project.process_model_id is not None:
+            stages = list(
+                db.scalars(
+                    select(Stage)
+                    .where(Stage.process_model_id == project.process_model_id)
+                    .order_by(Stage.seq)
+                )
+            )
+        position = next(
+            (index for index, item in enumerate(stages, start=1) if item.code == stage_code),
+            0,
+        )
+        stage_name = stages[position - 1].name if position else stage_code
+
+        progress = f"{position}/{len(stages)}" if position else ""
+        scope = " ".join(part for part in (model_code, progress) if part)
+        message = f"[{scope}] {stage_name} · {action}"
+
+        result = commit_project_changes(project_id, message)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "阶段进度 Git 提交失败: project=%s stage=%s", project_id, stage_code
+        )
+        return
+
+    if not result.get("created"):
+        return
+    logger.info("阶段进度已提交: %s (%s)", message, result.get("commit"))
+    publish(
+        project_id,
+        "git_committed",
+        {
+            "stage_code": stage_code,
+            "commit": result.get("commit"),
+            "message": message,
+        },
+    )
 
 
 # 文档保存前的必需内容关键词（与 prompts.STAGE_STRUCTURE 呼应）。
@@ -284,6 +344,9 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  #
             write_artifact_file(current["project_id"], artifact)
         except Exception:  # noqa: BLE001
             logger.exception("文档产物写文件失败")
+        commit_stage_progress(
+            db, current["project_id"], current["stage_code"], "文档已生成"
+        )
         publish(
             current["project_id"],
             "artifact_saved",
@@ -561,6 +624,7 @@ def execute_code_stage(
         write_artifact_file(project.id, artifact)
     except Exception:  # noqa: BLE001
         logger.exception("文档产物写文件失败")
+    commit_stage_progress(db, project.id, stage.code, "产物与验证结果已生成")
     publish(
         project.id,
         "artifact_saved",
@@ -677,6 +741,7 @@ def execute_coding_harness_stage(
         write_artifact_file(project.id, artifact)
     except Exception:  # noqa: BLE001
         logger.exception("文档产物写文件失败")
+    commit_stage_progress(db, project.id, stage.code, "编码与验证结果已生成")
     publish(
         project.id,
         "artifact_saved",
@@ -1062,6 +1127,7 @@ def confirm_stage(run: StageRun, db: Session) -> StageRun:
         write_artifact_file(run.project_id, artifact)
     except Exception:  # noqa: BLE001
         logger.exception("文档产物写文件失败")
+    commit_stage_progress(db, run.project_id, stage.code, "对话确认产物已生成")
     publish(
         run.project_id,
         "artifact_saved",

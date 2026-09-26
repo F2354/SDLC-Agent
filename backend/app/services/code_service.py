@@ -329,6 +329,24 @@ def git_commit(project_id: int, message: str) -> dict:
     return {"created": True, "commit": head.stdout.strip(), "message": message}
 
 
+def ensure_git_repo(project_id: int) -> bool:
+    """确保项目目录已初始化为 Git 仓库，返回本次是否新建。"""
+    if _repo_dir(project_id) is not None:
+        return False
+    init_git_repo(project_id)
+    return True
+
+
+def commit_project_changes(project_id: int, message: str) -> dict:
+    """提交项目目录下的全部变更（代码、测试、文档）。
+
+    项目目录尚未初始化仓库时会先初始化，使阶段产物能自动沉淀为
+    过程模型的执行轨迹，而不依赖用户手动点「初始化仓库」。
+    """
+    ensure_git_repo(project_id)
+    return git_commit(project_id, message)
+
+
 def list_code_files(project_id: int) -> CodeTreeOut:
     base = _target_dir(project_id, "code")
     if not base.exists():
