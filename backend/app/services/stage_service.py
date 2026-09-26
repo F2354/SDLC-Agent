@@ -38,6 +38,7 @@ from app.services.code_service import (
     run_verify,
     write_files,
 )
+from app.services.agent_roles import get_role_spec
 from app.services.agents import resolve_agent_model
 from app.services.coding_agent import run_coding_harness
 from app.services.artifact_file import write_artifact_file
@@ -89,6 +90,21 @@ CODE_STAGE_CODES = frozenset(
 
 def is_code_stage(stage_code: str) -> bool:
     return stage_code in CODE_STAGE_CODES
+
+
+# 需要真实写盘并运行验证，且应当走「Agent 工具循环」的阶段 → 绑定的执行角色。
+# 在此之前只有 coding 一个阶段真的走了工具循环，其余 6 个（含 V 模型三条验证通道）
+# 都退化成了单次文档生成 —— 与 README 的承诺不符。这里按角色重新绑定：
+# 开发类阶段由开发工程师完成，验证类阶段由测试工程师完成。
+TOOL_LOOP_ROLES: dict[str, str] = {
+    "coding": "developer",
+    "prototype": "developer",
+    "sprint-dev": "developer",
+    "testing": "tester",
+    "unit-test": "tester",
+    "integration-test": "tester",
+    "system-test": "tester",
+}
 
 
 # 阶段 → 对话使用的 agent 角色编码（与 seed.AGENT_ROLES 对应）。
@@ -511,10 +527,14 @@ def execute_code_stage(
     db: Session,
     model_name: str | None = None,
 ) -> None:
-    if stage.code == "coding":
-        execute_coding_harness_stage(stage, project, run, provider, db, model_name)
+    tool_loop_role = TOOL_LOOP_ROLES.get(stage.code)
+    if tool_loop_role is not None:
+        execute_coding_harness_stage(
+            stage, project, run, provider, db, model_name, tool_loop_role
+        )
         return
 
+    # 兜底：出现在 CODE_STAGE_CODES 但未绑定角色的阶段，仍走单次生成路径。
     run.status = "generating"
     run.started_at = datetime.now()
     db.add(
@@ -649,7 +669,9 @@ def execute_coding_harness_stage(
     provider: LLMProvider,
     db: Session,
     model_name: str | None = None,
+    agent_code: str = "developer",
 ) -> None:
+    role = get_role_spec(agent_code)
     run.status = "generating"
     run.started_at = datetime.now()
     db.add(
@@ -657,7 +679,7 @@ def execute_coding_harness_stage(
             project_id=project.id,
             stage_run_id=run.id,
             event_type="agent_started",
-            message=f"{stage.name}已开始工具化编码",
+            message=f"{stage.name}已开始（{role.name} · 工具循环）",
         )
     )
     db.commit()
@@ -669,7 +691,13 @@ def execute_coding_harness_stage(
     publish(
         project.id,
         "agent_started",
-        {"stage_run_id": run.id, "agent_code": stage.code, "message": stage.name},
+        {
+            "stage_run_id": run.id,
+            "agent_code": stage.code,
+            "agent_role": agent_code,
+            "model": model_name,
+            "message": stage.name,
+        },
     )
 
     previous_rows = list(
@@ -691,14 +719,17 @@ def execute_coding_harness_stage(
         previous_artifacts=previous_artifacts,
         max_turns=8,
         model_name=model_name,
+        agent_code=agent_code,
     )
-    tree = list_code_files(project.id)
+    target = role.write_target or "code"
+    tree = list_code_files(project.id, target)
     files_md = "\n".join(f"- {item.path}" for item in tree.files)
     verify_md = result.verify.output if result.verify else "无运行结果"
     tests_md = result.tests.output if result.tests else "无测试结果"
     content_md = (
-        f"# 编码产物\n\n"
-        f"生成文件：\n{files_md or '（无）'}\n\n"
+        f"# {stage.name}产物\n\n"
+        f"执行角色：{role.name}（{agent_code}）\n\n"
+        f"生成文件（{target}/）：\n{files_md or '（无）'}\n\n"
         f"## 运行验证\n\n{verify_md}\n\n"
         f"## 测试结果\n\n{tests_md}\n\n"
         f"最终状态：{'通过' if result.ok else '未完全通过'}，共 {result.turn_count} 轮工具调用。"
@@ -728,7 +759,7 @@ def execute_coding_harness_stage(
             project_id=project.id,
             stage_run_id=run.id,
             event_type="artifact_saved" if result.ok else "verification_failed",
-            message=f"{stage.name}工具化编码与验证结果已生成" if result.ok else f"{stage.name}验证未通过",
+            message=f"{stage.name}（{role.name}）工具循环与验证结果已生成" if result.ok else f"{stage.name}验证未通过",
         )
     )
     db.commit()
@@ -741,7 +772,7 @@ def execute_coding_harness_stage(
         write_artifact_file(project.id, artifact)
     except Exception:  # noqa: BLE001
         logger.exception("文档产物写文件失败")
-    commit_stage_progress(db, project.id, stage.code, "编码与验证结果已生成")
+    commit_stage_progress(db, project.id, stage.code, f"{role.name}工具循环与验证结果已生成")
     publish(
         project.id,
         "artifact_saved",

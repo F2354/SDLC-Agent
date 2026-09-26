@@ -5,6 +5,15 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.models.llm_provider import LLMProvider
+from app.services.agent_roles import (
+    GIT_TOOLS,
+    READ_TOOLS,
+    WRITE_TOOLS,
+    get_role_spec,
+    role_system_fragment,
+    role_tool_names,
+    role_write_target,
+)
 from app.services.agents import get_agent_permissions
 from app.services.code_service import (
     _PACKAGE_NAME_RE,
@@ -25,15 +34,22 @@ from app.services.code_service import (
 from app.services.llm_service import build_openai_client
 from app.services.skills import skill_context
 
+# 文件工具的通用目录参数：code=被测代码，tests=测试代码。
+_TARGET_PROPERTY = {
+    "type": "string",
+    "enum": ["code", "tests"],
+    "description": "操作目录：code=被测代码，tests=测试代码；省略时使用当前角色的默认目录。",
+}
+
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "列出当前代码目录中的文件。",
+            "description": "列出代码或测试目录中的文件。",
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {"target": _TARGET_PROPERTY},
                 "required": [],
             },
         },
@@ -42,10 +58,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "读取代码目录中的文件内容。",
+            "description": "读取代码或测试目录中的文件内容。",
             "parameters": {
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {"path": {"type": "string"}, "target": _TARGET_PROPERTY},
                 "required": ["path"],
             },
         },
@@ -54,12 +70,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "写入或覆盖代码目录中的文件。",
+            "description": "写入或覆盖代码或测试目录中的文件。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "content": {"type": "string"},
+                    "target": _TARGET_PROPERTY,
                 },
                 "required": ["path", "content"],
             },
@@ -69,13 +86,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "edit_file",
-            "description": "在代码文件中替换一段文本。",
+            "description": "在代码或测试文件中替换一段文本。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "old_string": {"type": "string"},
                     "new_string": {"type": "string"},
+                    "target": _TARGET_PROPERTY,
                 },
                 "required": ["path", "old_string", "new_string"],
             },
@@ -156,11 +174,14 @@ TOOLS = [
     },
 ]
 
-# Git 工具统一走 git 权限键，与 read / edit / bash 区分。
-_GIT_TOOLS = frozenset({"git_status", "git_diff", "git_log", "git_commit"})
+# 工具分组与「角色 → 工具子集」统一由 agent_roles 提供，避免两处定义漂移。
+_WRITE_TARGETS = ("code", "tests")
 
-_READ_TOOLS = frozenset({"list_files", "read_file"})
-_EDIT_TOOLS = frozenset({"write_file", "edit_file"})
+
+def tools_for_agent(agent_name: str) -> list[dict]:
+    """按角色工具子集过滤工具定义，作为该角色本轮可调用的工具清单。"""
+    allowed = role_tool_names(agent_name)
+    return [tool for tool in TOOLS if tool["function"]["name"] in allowed]
 
 
 @dataclass
@@ -285,35 +306,72 @@ def _execute_command(project_id: int, command: str, timeout: int = 15) -> dict:
         return _reject(f"命令执行失败：{exc}")
 
 
-def execute_tool(project_id: int, name: str, args: dict, agent_name: str = "developer") -> dict:
+def resolve_target(agent_name: str, args: dict) -> str:
+    """解析文件工具的操作目录。
+
+    优先采用调用方显式指定的 target；否则回退到角色自身的写入目标；
+    再回退到 code/。
+    """
+    explicit = args.get("target")
+    if isinstance(explicit, str) and explicit in _WRITE_TARGETS:
+        return explicit
+    role_target = role_write_target(agent_name)
+    return role_target if role_target in _WRITE_TARGETS else "code"
+
+
+def execute_tool(
+    project_id: int,
+    name: str,
+    args: dict,
+    agent_name: str = "developer",
+) -> dict:
     try:
-        if name in _READ_TOOLS:
+        # 第一道闸：角色工具子集。评审等只读角色在机制上就拿不到写工具。
+        if name not in role_tool_names(agent_name):
+            spec = get_role_spec(agent_name)
+            return {
+                "ok": False,
+                "error": f"角色「{spec.name}」不允许使用工具 {name}",
+            }
+
+        # 第二道闸：项目级 agents.json 的权限策略。
+        if name in READ_TOOLS:
             permission_key = "read"
-        elif name in _EDIT_TOOLS:
+        elif name in WRITE_TOOLS:
             permission_key = "edit"
-        elif name in _GIT_TOOLS:
+        elif name in GIT_TOOLS:
             permission_key = "git"
         else:
             permission_key = "bash"
         permission = get_agent_permissions(project_id, agent_name).get(permission_key, "ask")
         if permission == "deny":
             return {"ok": False, "error": f"Agent {agent_name} 没有 {permission_key} 工具权限"}
+
+        target = resolve_target(agent_name, args)
         if name == "list_files":
-            tree = list_code_files(project_id)
-            return {"ok": True, "files": [item.path for item in tree.files]}
+            tree = list_code_files(project_id, target)
+            return {
+                "ok": True,
+                "target": target,
+                "files": [item.path for item in tree.files],
+            }
         if name == "read_file":
-            return {"ok": True, "content": read_code_file(project_id, args["path"])[:4000]}
+            return {
+                "ok": True,
+                "content": read_code_file(project_id, args["path"], target)[:4000],
+            }
         if name == "write_file":
-            path = write_code_file(project_id, args["path"], args["content"])
-            return {"ok": True, "path": path}
+            path = write_code_file(project_id, args["path"], args["content"], target)
+            return {"ok": True, "path": path, "target": target}
         if name == "edit_file":
             path = edit_code_file(
                 project_id,
                 args["path"],
                 args["old_string"],
                 args["new_string"],
+                target,
             )
-            return {"ok": True, "path": path}
+            return {"ok": True, "path": path, "target": target}
         if name == "run_command":
             return _execute_command(project_id, args["command"])
         if name == "run_tests":
@@ -345,6 +403,49 @@ def _tests_passed(test_result) -> bool:
     return test_result.ok
 
 
+def _agent_goal_reached(agent_code: str, verify, tests) -> bool:
+    """判定该角色本轮是否达标。
+
+    开发工程师需要「启动验证 + 测试」同时通过；
+    其它可执行角色（如测试工程师）以测试结果为准 —— 它们不一定改动启动入口。
+    """
+    if not _tests_passed(tests):
+        return False
+    if agent_code == "developer":
+        return bool(verify is not None and verify.ok)
+    return True
+
+
+# 各角色在工具循环中的任务描述。
+_ROLE_TASKS: dict[str, str] = {
+    "developer": (
+        "请利用工具生成完整可运行的 FastAPI 项目，必须包含 requirements.txt、app/main.py、"
+        "app/models.py、README.md、tests/test_app.py。完成后运行验证与测试，直到通过。"
+    ),
+    "tester": (
+        "请先用 read_file（target=code）阅读已有实现，再在 tests/ 目录下编写 pytest 测试，"
+        "覆盖前置文档中列出的需求与模块。测试用例使用 TC-001 连续编号，"
+        "并标注其验证的需求 RQ-xxx 或模块 MOD-xxx。完成后运行测试直到通过。"
+    ),
+}
+
+_DEFAULT_ROLE_TASK = (
+    "请利用工具完成本阶段任务，产出可运行的结果并运行验证，直到通过。"
+)
+
+
+def build_agent_system_prompt(agent_code: str) -> str:
+    """拼装角色化系统提示词：角色职责 + 输出契约 + 通用工具约束。"""
+    return "\n\n".join(
+        [
+            role_system_fragment(agent_code),
+            "你必须通过工具完成文件读写与验证，禁止在回复中输出 Markdown 代码围栏。",
+            "可用 git_status / git_diff / git_log 查看工作区现状与历史进展；"
+            "阶段结束时系统会自动提交产物，无需手动调用 git_commit。",
+        ]
+    )
+
+
 def run_coding_harness(
     project_id: int,
     provider: LLMProvider,
@@ -353,31 +454,28 @@ def run_coding_harness(
     previous_artifacts: str,
     max_turns: int = 8,
     model_name: str | None = None,
+    agent_code: str = "developer",
 ) -> CodingResult:
     client = build_openai_client(provider)
     resolved_model = model_name or provider.default_model
-    system = (
-        "你是一个编码 Agent，负责在给定工作区中创建可运行的 Python FastAPI 项目。"
-        "你必须通过工具完成文件读写和验证，禁止输出 Markdown 代码围栏，"
-        "禁止使用 passlib，requirements.txt 不写版本号。"
-        "工作步骤建议：写文件，然后运行验证，最后运行测试。"
-        "可用 git_status / git_diff / git_log 查看工作区现状与历史进展；"
-        "阶段结束时系统会自动提交产物，无需手动调用 git_commit。"
-    )
+    spec = get_role_spec(agent_code)
+    system = build_agent_system_prompt(agent_code)
     skills = skill_context(project_id, "FastAPI Python coding testing Git", limit=4)
+    task = _ROLE_TASKS.get(agent_code, _DEFAULT_ROLE_TASK)
+    target = spec.write_target or "code"
     user = (
         f"项目名称：{project_name}\n"
         f"项目描述：{project_description}\n\n"
         f"前置文档：\n{previous_artifacts or '（无）'}\n\n"
         f"项目 Skills（仅作为本项目规则参考）：\n{skills or '（无）'}\n\n"
-        "请利用工具生成完整可运行的 FastAPI 项目，必须包含 requirements.txt、app/main.py、"
-        "app/models.py、README.md、tests/test_app.py。"
-        "完成后运行验证与测试，直到通过。"
+        f"你的工作目录是 {target}/ 目录。\n"
+        f"{task}"
     )
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+    tools = tools_for_agent(agent_code)
     verify = None
     tests = None
 
@@ -385,7 +483,7 @@ def run_coding_harness(
         response = client.chat.completions.create(
             model=resolved_model,
             messages=messages,
-            tools=TOOLS,
+            tools=tools,
             tool_choice="auto",
             temperature=0.2,
             max_tokens=4000,
@@ -414,7 +512,7 @@ def run_coding_harness(
                     args = json.loads(tool_call.function.arguments or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                result = execute_tool(project_id, tool_call.function.name, args, agent_name="developer")
+                result = execute_tool(project_id, tool_call.function.name, args, agent_name=agent_code)
                 messages.append(
                     {
                         "role": "tool",
@@ -424,7 +522,7 @@ def run_coding_harness(
                 )
             verify = run_verify(project_id)
             tests = run_stage_tests(project_id)
-            if verify.ok and _tests_passed(tests):
+            if _agent_goal_reached(agent_code, verify, tests):
                 return CodingResult(ok=True, verify=verify, tests=tests, turn_count=turn + 1)
             messages.append(
                 {
@@ -440,7 +538,7 @@ def run_coding_harness(
                 messages.append({"role": "assistant", "content": message.content})
             verify = run_verify(project_id)
             tests = run_stage_tests(project_id)
-            if verify.ok and _tests_passed(tests):
+            if _agent_goal_reached(agent_code, verify, tests):
                 return CodingResult(ok=True, verify=verify, tests=tests, turn_count=turn + 1)
             if turn < max_turns - 1:
                 messages.append(

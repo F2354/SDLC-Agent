@@ -347,8 +347,8 @@ def commit_project_changes(project_id: int, message: str) -> dict:
     return git_commit(project_id, message)
 
 
-def list_code_files(project_id: int) -> CodeTreeOut:
-    base = _target_dir(project_id, "code")
+def list_code_files(project_id: int, target: Literal["code", "tests"] = "code") -> CodeTreeOut:
+    base = _target_dir(project_id, target)
     if not base.exists():
         return CodeTreeOut(exists=False, files=[])
     files = []
@@ -366,16 +366,25 @@ def list_code_files(project_id: int) -> CodeTreeOut:
     return CodeTreeOut(exists=True, files=files)
 
 
-def read_code_file(project_id: int, relative_path: str) -> str:
-    base = _target_dir(project_id, "code")
+def read_code_file(
+    project_id: int,
+    relative_path: str,
+    target: Literal["code", "tests"] = "code",
+) -> str:
+    base = _target_dir(project_id, target)
     path = _safe_path(base, relative_path)
     if not path.is_file():
         raise FileNotFoundError(relative_path)
     return path.read_text(encoding="utf-8")
 
 
-def write_code_file(project_id: int, relative_path: str, content: str) -> str:
-    base = _target_dir(project_id, "code")
+def write_code_file(
+    project_id: int,
+    relative_path: str,
+    content: str,
+    target: Literal["code", "tests"] = "code",
+) -> str:
+    base = _target_dir(project_id, target)
     path = _safe_path(base, relative_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -387,8 +396,9 @@ def edit_code_file(
     relative_path: str,
     old_string: str,
     new_string: str,
+    target: Literal["code", "tests"] = "code",
 ) -> str:
-    base = _target_dir(project_id, "code")
+    base = _target_dir(project_id, target)
     path = _safe_path(base, relative_path)
     if not path.is_file():
         raise FileNotFoundError(relative_path)
