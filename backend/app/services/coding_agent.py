@@ -372,17 +372,58 @@ def _execute_command(project_id: int, command: str, timeout: int = 15) -> dict:
         return _reject(f"命令执行失败：{exc}")
 
 
-def resolve_target(agent_name: str, args: dict) -> str:
-    """解析文件工具的操作目录。
+def resolve_entry_target(
+    agent_name: str,
+    raw_path: str,
+    explicit: str | None = None,
+) -> tuple[str, str]:
+    """解析一条路径的目标目录与实际相对路径。
 
-    优先采用调用方显式指定的 target；否则回退到角色自身的写入目标；
-    再回退到 code/。
+    优先级：**显式 target 参数 → 路径首段（code/ 或 tests/）→ 角色默认目标**。
+
+    路径前缀必须参与判断：否则开发工程师写 ``tests/test_app.py`` 会被拼成
+    ``code/tests/test_app.py``，项目里因此出现两套测试目录，
+    测试阶段根本跑不到测试工程师写的测试。
     """
-    explicit = args.get("target")
+    # 只把 Windows 风格分隔符统一成 /；**不做 lstrip("/")**，
+    # 否则 /etc/passwd 这类绝对路径会被"宽容"成相对路径而绕过守卫。
+    path = (raw_path or "").strip().replace("\\", "/")
     if isinstance(explicit, str) and explicit in _WRITE_TARGETS:
-        return explicit
+        return explicit, path
+    head, sep, rest = path.partition("/")
+    if sep and head in _WRITE_TARGETS and rest:
+        return head, rest
+    role_target = role_write_target(agent_name)
+    return (role_target if role_target in _WRITE_TARGETS else "code"), path
+
+
+def default_target_for(agent_name: str) -> str:
     role_target = role_write_target(agent_name)
     return role_target if role_target in _WRITE_TARGETS else "code"
+
+
+def normalize_batch_entries(
+    agent_name: str,
+    entries: object,
+    explicit: str | None = None,
+) -> object:
+    """把批量条目的路径解析为「显式 target + 已剥离前缀的路径」。
+
+    这样同一次 write_files / edit_files 里，``app/main.py`` 与
+    ``tests/test_app.py`` 能各自落到正确目录。
+    """
+    if not isinstance(entries, list):
+        return entries
+    normalized: list[object] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            normalized.append(entry)
+            continue
+        target, path = resolve_entry_target(
+            agent_name, str(entry.get("path") or ""), explicit
+        )
+        normalized.append({**entry, "path": path, "target": target})
+    return normalized
 
 
 def execute_tool(
@@ -413,8 +454,13 @@ def execute_tool(
         if permission == "deny":
             return {"ok": False, "error": f"Agent {agent_name} 没有 {permission_key} 工具权限"}
 
-        target = resolve_target(agent_name, args)
+        explicit = args.get("target")
         if name == "list_files":
+            target = (
+                explicit
+                if isinstance(explicit, str) and explicit in _WRITE_TARGETS
+                else default_target_for(agent_name)
+            )
             tree = list_code_files(project_id, target)
             return {
                 "ok": True,
@@ -422,27 +468,36 @@ def execute_tool(
                 "files": [item.path for item in tree.files],
             }
         if name == "read_file":
+            target, path = resolve_entry_target(agent_name, args["path"], explicit)
             return {
                 "ok": True,
-                "content": read_code_file(project_id, args["path"], target)[:4000],
+                "content": read_code_file(project_id, path, target)[:4000],
             }
         if name == "write_file":
-            path = write_code_file(project_id, args["path"], args["content"], target)
-            return {"ok": True, "path": path, "target": target}
+            target, path = resolve_entry_target(agent_name, args["path"], explicit)
+            written = write_code_file(project_id, path, args["content"], target)
+            return {"ok": True, "path": f"{target}/{written}", "target": target}
         if name == "edit_file":
-            path = edit_code_file(
+            target, path = resolve_entry_target(agent_name, args["path"], explicit)
+            edited = edit_code_file(
                 project_id,
-                args["path"],
+                path,
                 args["old_string"],
                 args["new_string"],
                 target,
             )
-            return {"ok": True, "path": path, "target": target}
+            return {"ok": True, "path": f"{target}/{edited}", "target": target}
         if name == "write_files":
-            result = write_many_files(project_id, args.get("files"), target)
+            entries = normalize_batch_entries(agent_name, args.get("files"), explicit)
+            result = write_many_files(
+                project_id, entries, default_target_for(agent_name)
+            )
             return {"ok": True, **result}
         if name == "edit_files":
-            result = edit_many_files(project_id, args.get("edits"), target)
+            entries = normalize_batch_entries(agent_name, args.get("edits"), explicit)
+            result = edit_many_files(
+                project_id, entries, default_target_for(agent_name)
+            )
             return {"ok": True, **result}
         if name == "run_command":
             return _execute_command(project_id, args["command"])
@@ -522,8 +577,9 @@ def _summarize_tool_call(name: str, args: dict, result: dict) -> str:
 # 各角色在工具循环中的任务描述。
 _ROLE_TASKS: dict[str, str] = {
     "developer": (
-        "请利用工具生成完整可运行的 FastAPI 项目，必须包含 requirements.txt、app/main.py、"
-        "app/models.py、README.md、tests/test_app.py。"
+        "请利用工具生成完整可运行的 FastAPI 项目。目录约定："
+        "requirements.txt、app/main.py、app/models.py、README.md 属于 code/ 目录；"
+        "测试文件属于 tests/ 目录（路径写成 tests/xxx.py 即会落到 tests/）。"
         "建议用 write_files 一次写入多个文件建立骨架，再用 edit_file / edit_files 做局部修改。"
         "完成后运行验证与测试，直到通过。"
     ),
@@ -545,6 +601,9 @@ def build_agent_system_prompt(agent_code: str) -> str:
         [
             role_system_fragment(agent_code),
             "你必须通过工具完成文件读写与验证，禁止在回复中输出 Markdown 代码围栏。",
+            "文件路径必须是不含盘符、环境变量与通配符的相对路径，"
+            "例如 app/main.py、tests/test_app.py；以 code/ 或 tests/ 开头的路径"
+            "会落到对应目录，其它路径落到你的默认目录。",
             "可用 git_status / git_diff / git_log 查看工作区现状与历史进展；"
             "阶段结束时系统会自动提交产物，无需手动调用 git_commit。",
         ]
@@ -574,7 +633,7 @@ def run_coding_harness(
         f"项目描述：{project_description}\n\n"
         f"前置文档：\n{previous_artifacts or '（无）'}\n\n"
         f"项目 Skills（仅作为本项目规则参考）：\n{skills or '（无）'}\n\n"
-        f"你的工作目录是 {target}/ 目录。\n"
+        f"你的默认工作目录是 {target}/；路径以 code/ 或 tests/ 开头时会落到对应目录。\n"
         f"{task}"
     )
     messages = [

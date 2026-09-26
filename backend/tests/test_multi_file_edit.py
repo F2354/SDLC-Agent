@@ -6,6 +6,7 @@
 - 不可越出工作区。
 """
 
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -61,9 +62,14 @@ def test_write_many_files_creates_all_files(client, project_folder):
     )
 
     assert result["count"] == 3
-    assert set(result["files"]) == {"app/main.py", "app/models.py", "README.md"}
+    # 返回值带目录前缀，便于看清每个文件落到了哪里。
+    assert set(result["files"]) == {
+        "code/app/main.py",
+        "code/app/models.py",
+        "code/README.md",
+    }
     for relative in result["files"]:
-        assert (Path(project_folder) / "code" / relative).is_file()
+        assert (Path(project_folder) / relative).is_file()
 
 
 def test_write_many_files_rolls_back_new_files_on_failure(client, project_folder):
@@ -248,3 +254,145 @@ def test_execute_tool_rejects_batch_write_for_reviewer(client, project_folder):
     assert result["ok"] is False
     assert "不允许使用工具" in result["error"]
     assert not (Path(project_folder) / "code" / "x.py").exists()
+
+
+def test_batch_write_routes_paths_by_prefix(client, project_folder):
+    """回归：开发工程师同时写代码与测试时，两者必须落到各自目录。
+
+    此前按角色默认目标统一解析，于是 ``tests/test_app.py`` 被拼成
+    ``code/tests/test_app.py``，项目里出现两套测试目录，
+    测试阶段根本跑不到测试工程师写的测试。
+    """
+    project_id = _setup_project(client, project_folder)
+
+    result = execute_tool(
+        project_id,
+        "write_files",
+        {
+            "files": [
+                {"path": "app/main.py", "content": "print('main')\n"},
+                {"path": "tests/test_app.py", "content": "def test_ok():\n    assert True\n"},
+            ]
+        },
+        agent_name="developer",
+    )
+
+    assert result["ok"] is True
+    assert set(result["files"]) == {"code/app/main.py", "tests/test_app.py"}
+    assert (Path(project_folder) / "code" / "app" / "main.py").is_file()
+    assert (Path(project_folder) / "tests" / "test_app.py").is_file()
+    # 不应再出现 code/tests/ 这层多余目录。
+    assert not (Path(project_folder) / "code" / "tests").exists()
+
+
+def test_single_file_tool_routes_by_prefix(client, project_folder):
+    project_id = _setup_project(client, project_folder)
+
+    written = execute_tool(
+        project_id,
+        "write_file",
+        {"path": "tests/conftest.py", "content": "import pytest\n"},
+        agent_name="developer",
+    )
+    assert written["ok"] is True
+    assert written["path"] == "tests/conftest.py"
+    assert (Path(project_folder) / "tests" / "conftest.py").is_file()
+
+    read_back = execute_tool(
+        project_id,
+        "read_file",
+        {"path": "tests/conftest.py"},
+        agent_name="developer",
+    )
+    assert read_back["ok"] is True
+    assert "import pytest" in read_back["content"]
+
+
+def test_batch_edit_routes_paths_by_prefix(client, project_folder):
+    project_id = _setup_project(client, project_folder)
+    code_dir = Path(project_folder) / "code"
+    tests_dir = Path(project_folder) / "tests"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "app.py").write_text("NAME = 'old'\n", encoding="utf-8")
+    (tests_dir / "test_app.py").write_text("from app import old\n", encoding="utf-8")
+
+    result = execute_tool(
+        project_id,
+        "edit_files",
+        {
+            "edits": [
+                {"path": "code/app.py", "old_string": "'old'", "new_string": "'new'"},
+                {"path": "tests/test_app.py", "old_string": "import old", "new_string": "import new"},
+            ]
+        },
+        agent_name="developer",
+    )
+
+    assert result["ok"] is True
+    assert set(result["files"]) == {"code/app.py", "tests/test_app.py"}
+    assert "NAME = 'new'" in (code_dir / "app.py").read_text(encoding="utf-8")
+    assert "import new" in (tests_dir / "test_app.py").read_text(encoding="utf-8")
+
+
+def test_suspicious_paths_are_rejected(client, project_folder):
+    """回归：``%SystemDrive%/...`` 这类伪路径必须被拒，不能建成嵌套目录。"""
+    project_id = _setup_project(client, project_folder)
+
+    bogus = [
+        "%SystemDrive%/ProgramData/Windows/Caches/x.db",
+        "C:/Windows/System32/x.py",
+        "/etc/passwd",
+        "~/secret.py",
+        "a:b.py",
+        "",
+    ]
+    for path in bogus:
+        result = execute_tool(
+            project_id,
+            "write_file",
+            {"path": path, "content": "x"},
+            agent_name="developer",
+        )
+        assert result["ok"] is False, f"路径应当被拒绝：{path!r}"
+
+    # 批量为全有或全无：含一条非法路径时整个调用失败且不落盘。
+    batch = execute_tool(
+        project_id,
+        "write_files",
+        {
+            "files": [
+                {"path": "app/ok.py", "content": "ok\n"},
+                {"path": "%SystemDrive%/bad.py", "content": "bad\n"},
+            ]
+        },
+        agent_name="developer",
+    )
+    assert batch["ok"] is False
+    assert not (Path(project_folder) / "code" / "app" / "ok.py").exists()
+    assert not (Path(project_folder) / "code" / "%SystemDrive%").exists()
+
+
+def test_gitignore_covers_runtime_artifacts(client, project_folder):
+    """回归：生成项目的 .gitignore 必须覆盖数据库与缓存。"""
+    project_id = _setup_project(client, project_folder)
+    (Path(project_folder) / "code").mkdir(parents=True, exist_ok=True)
+    (Path(project_folder) / "code" / "todos.db").write_text("", encoding="utf-8")
+
+    status = execute_tool(project_id, "git_commit", {"message": "初始化"}, agent_name="developer")
+    assert status["ok"] is True
+
+    gitignore = (Path(project_folder) / ".gitignore").read_text(encoding="utf-8")
+    for entry in ("*.db", "*.sqlite3", ".pytest_cache/", ".venv/"):
+        assert entry in gitignore, f".gitignore 缺少 {entry}"
+
+    # 数据库文件不应进入提交。
+    tracked = execute_tool(project_id, "git_log", {"limit": 1}, agent_name="developer")
+    assert tracked["ok"] is True
+    listed = subprocess.run(
+        ["git", "-C", project_folder, "ls-files"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert "todos.db" not in listed.stdout

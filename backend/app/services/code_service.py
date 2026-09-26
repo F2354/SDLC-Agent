@@ -28,6 +28,10 @@ def _target_dir(project_id: int, target: Literal["code", "tests"]) -> Path:
     return root / ("code" if target == "code" else "tests")
 
 
+# 工作区内可写的两个目录。
+_TARGETS = ("code", "tests")
+
+
 def code_root(project_id: int) -> Path:
     return _target_dir(project_id, "code")
 
@@ -203,9 +207,38 @@ def _clean_body(body: str) -> str:
 
 
 def _safe_path(base: Path, relative_path: str) -> Path:
-    target = (base / relative_path).resolve()
+    """把相对路径解析到 base 之下，并拒绝非法路径。
+
+    仅靠 ``relative_to`` 只能拦住越界，拦不住 ``%SystemDrive%/ProgramData/...``
+    这类在 Windows 上无意义、却会被当成普通相对路径的写法
+    （实测 Agent 写出过这种伪路径并在 code/ 下建出了嵌套目录）。
+    """
+    cleaned = _validate_relative_path(relative_path)
+    target = (base / cleaned).resolve()
     target.relative_to(base.resolve())
     return target
+
+
+# 这些字符在源码文件路径里不可能是合法意图：
+# 冒号（Windows 驱动器号 / 数据流）、百分号（环境变量引用）、
+# 以及 Windows 文件名禁用字符与控制字符。
+_INVALID_PATH_CHARS = re.compile(r'[%:*?"<>|\r\n\x00]')
+
+
+def _validate_relative_path(relative_path: str) -> str:
+    """校验并规范化一条相对路径；非法时抛 ValueError。"""
+    path = (relative_path or "").strip()
+    if not path:
+        raise ValueError("文件路径不能为空")
+    if path.startswith(("/", "\\")):
+        raise ValueError(f"文件路径必须是相对路径：{relative_path}")
+    if path.startswith("~"):
+        raise ValueError(f"文件路径不能以 ~ 开头：{relative_path}")
+    if _INVALID_PATH_CHARS.search(path):
+        raise ValueError(
+            f"文件路径包含非法字符（冒号、百分号或 Windows 保留字符）：{relative_path}"
+        )
+    return path
 
 
 def write_files(
@@ -251,33 +284,53 @@ def _coerce_entries(items: object, required: tuple[str, ...], what: str) -> list
     return normalized
 
 
+def _coerce_target(value: object, fallback: str) -> str:
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in _TARGETS else fallback
+
+
+def _resolve_entry(project_id: int, entry: dict, default_target: str) -> tuple[Path, str]:
+    """把一条批量条目解析成 (绝对路径, 展示用路径)。
+
+    条目可以自带 ``target``，因此同一次批量调用里
+    ``app/main.py`` 与 ``tests/test_app.py`` 能各自落到正确目录 ——
+    这正是"开发工程师同时产出代码与测试"所必需的。
+    """
+    target = _coerce_target(entry.get("target"), default_target)
+    base = _target_dir(project_id, target)
+    path = _safe_path(base, entry["path"])
+    return path, f"{target}/{path.relative_to(base).as_posix()}"
+
+
 def write_many_files(
     project_id: int,
     files: object,
-    target: Literal["code", "tests"] = "code",
+    target: str = "code",
 ) -> dict:
     """一次写入多个文件（多文件协同编辑）。
 
     先把全部路径解析校验一遍，再逐个写入；若中途失败，则把本次已经写入的
     文件还原（新建的删除、覆盖的恢复原内容），不留下半成品。
+    条目可携带 ``target`` 以落到不同目录（code / tests）。
     """
+    default_target = _coerce_target(target, "code")
     entries = _coerce_entries(files, ("path", "content"), "files")
-    base = _target_dir(project_id, target)
-
-    # 路径全部先解析，越界或非法会在这里就抛错，此时尚未落盘。
-    resolved = [(path, str(item.get("content") or "")) for path, item in
-                ((_safe_path(base, entry["path"]), entry) for entry in entries)]
+    # 路径与目录全部先解析，越界或非法会在这里就抛错，此时尚未落盘。
+    resolved = [
+        (*_resolve_entry(project_id, entry, default_target), str(entry.get("content") or ""))
+        for entry in entries
+    ]
 
     backups: list[tuple[Path, str | None]] = []
     written: list[str] = []
     try:
-        for path, content in resolved:
+        for path, display, content in resolved:
             backups.append(
                 (path, path.read_text(encoding="utf-8") if path.is_file() else None)
             )
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-            written.append(path.relative_to(base).as_posix())
+            written.append(display)
     except OSError as exc:
         for path, original in reversed(backups):
             try:
@@ -289,26 +342,32 @@ def write_many_files(
                 logger.warning("回滚文件失败: %s", path)
         raise ValueError(f"批量写入失败，已回滚本次改动：{exc}") from exc
 
-    return {"target": target, "count": len(written), "files": written}
+    return {
+        "target": default_target,
+        "count": len(written),
+        "files": written,
+    }
 
 
 def edit_many_files(
     project_id: int,
     edits: object,
-    target: Literal["code", "tests"] = "code",
+    target: str = "code",
 ) -> dict:
     """跨文件批量替换（协同修改）。
 
     全部改动先在内存中应用并校验，**全部通过后才落盘**，
     因此天然是全有或全无，不会出现改了一半的中间状态。
+    条目可携带 ``target`` 以落到不同目录（code / tests）。
     """
+    default_target = _coerce_target(target, "code")
     entries = _coerce_entries(
         edits, ("path", "old_string", "new_string"), "edits"
     )
-    base = _target_dir(project_id, target)
 
     staged: dict[Path, str] = {}
     order: list[Path] = []
+    display: dict[Path, str] = {}
     for entry in entries:
         old = entry.get("old_string")
         new = entry.get("new_string")
@@ -317,12 +376,13 @@ def edit_many_files(
         if not isinstance(new, str):
             raise ValueError(f"{entry['path']} 的 new_string 必须是字符串")
 
-        path = _safe_path(base, entry["path"])
+        path, shown = _resolve_entry(project_id, entry, default_target)
         if path not in staged:
             if not path.is_file():
                 raise FileNotFoundError(f"文件不存在：{entry['path']}")
             staged[path] = path.read_text(encoding="utf-8")
             order.append(path)
+            display[path] = shown
         if old not in staged[path]:
             raise ValueError(f"未在 {entry['path']} 中找到要替换的内容")
 
@@ -331,9 +391,9 @@ def edit_many_files(
     written: list[str] = []
     for path in order:
         path.write_text(staged[path], encoding="utf-8")
-        written.append(path.relative_to(base).as_posix())
+        written.append(display[path])
 
-    return {"target": target, "count": len(written), "files": written}
+    return {"target": default_target, "count": len(written), "files": written}
 
 
 
@@ -355,14 +415,49 @@ def _git_run(project_id: int, args: list[str], timeout: int = 20) -> subprocess.
     )
 
 
+# 生成项目必须忽略的内容：虚拟环境、缓存，以及运行期产生的数据库。
+# 后者曾被 Agent 的测试写进 code/ 并混进 Git 轨迹（见 test.db / todos.db）。
+_REQUIRED_GITIGNORE_ENTRIES = (
+    ".venv/",
+    "__pycache__/",
+    "*.pyc",
+    ".pytest_cache/",
+    ".requirements-safe.txt",
+    ".env",
+    "*.db",
+    "*.sqlite3",
+    "*.db-journal",
+    "*.db-wal",
+    "*.db-shm",
+)
+
+
+def _ensure_gitignore(root: Path) -> None:
+    """确保项目根目录的 .gitignore 覆盖运行产物。
+
+    采用「缺什么补什么」而不是「不存在才写」，
+    这样早期生成的项目也能在下次提交前被补上规则。
+    """
+    marker = root / ".gitignore"
+    existing: list[str] = []
+    if marker.exists():
+        try:
+            existing = marker.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            existing = []
+    present = {line.strip() for line in existing}
+    missing = [entry for entry in _REQUIRED_GITIGNORE_ENTRIES if entry not in present]
+    if not missing and marker.exists():
+        return
+    lines = [line for line in existing if line.strip()]
+    lines.extend(missing)
+    marker.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def init_git_repo(project_id: int) -> dict:
     root = _project_root(project_id)
     root.mkdir(parents=True, exist_ok=True)
-    if not (root / ".gitignore").exists():
-        (root / ".gitignore").write_text(
-            ".venv/\n__pycache__/\n*.pyc\n.pytest_cache/\n.requirements-safe.txt\n.env\n",
-            encoding="utf-8",
-        )
+    _ensure_gitignore(root)
     if _repo_dir(project_id) is None:
         result = _git_run(project_id, ["init"], timeout=30)
         if result.returncode != 0:

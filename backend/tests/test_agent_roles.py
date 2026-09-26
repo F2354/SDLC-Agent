@@ -15,7 +15,12 @@ from app.services.agent_roles import (
     role_tool_names,
     role_write_target,
 )
-from app.services.coding_agent import TOOLS, execute_tool, resolve_target, tools_for_agent
+from app.services.coding_agent import (
+    TOOLS,
+    execute_tool,
+    resolve_entry_target,
+    tools_for_agent,
+)
 from app.services.seed import AGENT_ROLES
 from app.services.stage_service import (
     CODE_STAGE_CODES,
@@ -146,16 +151,43 @@ def test_document_role_command_attempt_is_rejected(client, project_folder):
     assert "不允许使用工具" in result["error"]
 
 
-def test_resolve_target_prefers_explicit_value_then_role_default():
-    # 显式指定优先
-    assert resolve_target("developer", {"target": "tests"}) == "tests"
-    # 非法值被忽略，回退角色默认
-    assert resolve_target("developer", {"target": "etc"}) == "code"
-    # 测试角色默认写 tests/
-    assert resolve_target("tester", {}) == "tests"
-    # 只读角色无写入目标，回退 code/
-    assert resolve_target("reviewer", {}) == "code"
+def test_resolve_entry_target_priority():
+    """路径 → 目标目录的解析优先级：显式 target > 路径前缀 > 角色默认。
+
+    路径前缀这一条是回归防线：此前开发工程师写 ``tests/test_app.py``
+    会被拼成 ``code/tests/test_app.py``，项目里因此出现两套测试目录，
+    测试阶段跑不到测试工程师写的测试。
+    """
+    # 1. 显式 target 最优先，且路径原样保留（调用方明确表态）
+    assert resolve_entry_target("developer", "app/main.py", "tests") == (
+        "tests",
+        "app/main.py",
+    )
+    # 2. 其次看路径前缀
+    assert resolve_entry_target("developer", "tests/test_app.py") == (
+        "tests",
+        "test_app.py",
+    )
+    assert resolve_entry_target("tester", "code/app/main.py") == (
+        "code",
+        "app/main.py",
+    )
+    # 反斜杠前缀同样识别
+    assert resolve_entry_target("developer", r"tests\test_app.py") == (
+        "tests",
+        "test_app.py",
+    )
+    # 3. 无前缀时回退角色默认写入目标
+    assert resolve_entry_target("developer", "app/main.py") == ("code", "app/main.py")
+    assert resolve_entry_target("tester", "test_app.py") == ("tests", "test_app.py")
+    # 只读角色没有写入目标，回退 code/
+    assert resolve_entry_target("reviewer", "x.py") == ("code", "x.py")
     assert role_write_target("reviewer") == ""
+    # 非法的显式 target 被忽略
+    assert resolve_entry_target("developer", "app/main.py", "etc") == (
+        "code",
+        "app/main.py",
+    )
 
 
 def test_document_role_writes_folder_is_documented_target():
