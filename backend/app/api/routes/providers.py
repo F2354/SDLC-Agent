@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_provider_or_404
 from app.db.session import get_db
 from app.models.llm_provider import LLMProvider, LLMProviderModel
 from app.models.user import User
@@ -25,17 +25,6 @@ def _assert_base_url_allowed(base_url: str) -> None:
         validate_base_url(base_url)
     except ProviderUrlError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-
-def get_owned_provider(provider_id: int, user: User, db: Session) -> LLMProvider:
-    provider = db.scalar(
-        select(LLMProvider)
-        .where(LLMProvider.id == provider_id, LLMProvider.user_id == user.id)
-        .options(selectinload(LLMProvider.models))
-    )
-    if provider is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider 不存在")
-    return provider
 
 
 def provider_out(provider: LLMProvider) -> ProviderOut:
@@ -75,10 +64,10 @@ def list_providers(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 单工作区：Provider 也是共享的，不按用户过滤。
     providers = list(
         db.scalars(
             select(LLMProvider)
-            .where(LLMProvider.user_id == user.id)
             .options(selectinload(LLMProvider.models))
             .order_by(LLMProvider.created_at.desc())
         )
@@ -107,7 +96,7 @@ def create_provider(
     sync_models(provider, payload.models, db)
     db.commit()
 
-    provider = get_owned_provider(provider.id, user, db)
+    provider = get_provider_or_404(provider.id, db)
     return provider_out(provider)
 
 
@@ -117,7 +106,7 @@ def get_provider(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return provider_out(get_owned_provider(provider_id, user, db))
+    return provider_out(get_provider_or_404(provider_id, db))
 
 
 @router.patch("/{provider_id}", response_model=ProviderOut)
@@ -127,7 +116,7 @@ def update_provider(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    provider = get_owned_provider(provider_id, user, db)
+    provider = get_provider_or_404(provider_id, db)
     if payload.name is not None:
         provider.name = payload.name
     if payload.type is not None:
@@ -144,7 +133,7 @@ def update_provider(
     if payload.enabled is not None:
         provider.enabled = payload.enabled
     db.commit()
-    provider = get_owned_provider(provider_id, user, db)
+    provider = get_provider_or_404(provider_id, db)
     return provider_out(provider)
 
 
@@ -154,7 +143,7 @@ def delete_provider(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    provider = get_owned_provider(provider_id, user, db)
+    provider = get_provider_or_404(provider_id, db)
     db.delete(provider)
     db.commit()
 
@@ -165,7 +154,7 @@ def test_provider(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    provider = get_owned_provider(provider_id, user, db)
+    provider = get_provider_or_404(provider_id, db)
     result = test_provider_connection(provider)
     if result.ok and result.models and not provider.models:
         sync_models(provider, result.models, db)
@@ -179,5 +168,5 @@ def list_provider_models(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    provider = get_owned_provider(provider_id, user, db)
+    provider = get_provider_or_404(provider_id, db)
     return provider.models

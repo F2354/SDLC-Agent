@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_project_or_404
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.user import User
@@ -24,9 +24,7 @@ async def project_events(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    project = db.get(Project, project_id)
-    if project is None or project.owner_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
+    get_project_or_404(project_id, db)
 
     queue = subscribe(project_id)
 

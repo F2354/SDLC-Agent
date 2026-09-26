@@ -43,7 +43,8 @@ def test_provider_crud(client):
 
     listed = client.get("/api/providers", headers=headers)
     assert listed.status_code == 200
-    assert len(listed.json()) == 1
+    # 单工作区：Provider 跨用户共享，断言自己创建的这个可见即可。
+    assert provider_id in {item["id"] for item in listed.json()}
 
     updated = client.patch(
         f"/api/providers/{provider_id}",
@@ -55,4 +56,5 @@ def test_provider_crud(client):
 
     deleted = client.delete(f"/api/providers/{provider_id}", headers=headers)
     assert deleted.status_code == 204
-    assert client.get("/api/providers", headers=headers).json() == []
+    remaining = client.get("/api/providers", headers=headers).json()
+    assert provider_id not in {item["id"] for item in remaining}

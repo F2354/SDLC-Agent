@@ -1,8 +1,20 @@
 import uuid
 
+from sqlalchemy import select
+
+from app.db.session import SessionLocal
+from app.models.llm_provider import LLMProvider
+
 
 def unique_name(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
+
+
+def _set_all_providers_enabled(enabled: bool) -> None:
+    with SessionLocal() as db:
+        for provider in db.scalars(select(LLMProvider)):
+            provider.enabled = enabled
+        db.commit()
 
 
 def test_register_login_and_me(client):
@@ -58,12 +70,19 @@ def test_create_project_and_flow(client, project_folder):
     assert body["stages"][0]["stage"]["code"] == "requirements"
     assert body["stages"][0]["status"] == "pending"
 
-    started = client.post(
-        f"/api/projects/{project_id}/stages/requirements/start",
-        headers=headers,
-        json={"mode": "auto"},
-    )
-    assert started.status_code == 400
+    # 单工作区下 Provider 是共享的，"无可用 Provider" 取决于整个工作区的状态，
+    # 因此这里在数据库层面临时停用全部 Provider 来验证该守卫。
+    _set_all_providers_enabled(False)
+    try:
+        started = client.post(
+            f"/api/projects/{project_id}/stages/requirements/start",
+            headers=headers,
+            json={"mode": "auto"},
+        )
+        assert started.status_code == 400
+        assert "Provider" in started.json()["detail"]
+    finally:
+        _set_all_providers_enabled(True)
 
     artifacts = client.get(f"/api/projects/{project_id}/artifacts", headers=headers)
     assert artifacts.status_code == 200

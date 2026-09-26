@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger("uvicorn.error")
 
-from app.api.deps import get_current_user
+from app.api.deps import get_artifact_or_404, get_current_user
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.stage_run import Artifact, ArtifactVersion
@@ -22,13 +22,8 @@ router = APIRouter(prefix="/artifacts", tags=["artifacts"])
 
 
 def get_owned_artifact(artifact_id: int, user: User, db: Session) -> Artifact:
-    artifact = db.get(Artifact, artifact_id)
-    if artifact is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="产物不存在")
-    project = db.get(Project, artifact.project_id)
-    if project is None or project.owner_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="产物不存在")
-    return artifact
+    """兼容旧调用的薄封装：工作区共享，user 不再参与鉴权。"""
+    return get_artifact_or_404(artifact_id, db)
 
 
 @router.patch("/{artifact_id}", response_model=ArtifactOut)

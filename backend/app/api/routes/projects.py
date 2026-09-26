@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_project_or_404
 from app.db.session import get_db
 from app.models.llm_provider import LLMProvider
 from app.models.process_model import ProcessModel, Stage
@@ -43,14 +43,8 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 
 def get_owned_project(project_id: int, user: User, db: Session) -> Project:
-    project = db.scalar(
-        select(Project)
-        .where(Project.id == project_id, Project.owner_id == user.id)
-        .options(selectinload(Project.process_model))
-    )
-    if project is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
-    return project
+    """兼容旧调用的薄封装：工作区共享，user 不再参与鉴权。"""
+    return get_project_or_404(project_id, db)
 
 
 @router.get("", response_model=list[ProjectOut])
@@ -58,10 +52,10 @@ def list_projects(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 单工作区：不按 owner 过滤，登录用户看到同一批项目。
     return list(
         db.scalars(
             select(Project)
-            .where(Project.owner_id == user.id)
             .options(selectinload(Project.process_model))
             .order_by(Project.created_at.desc())
         )
@@ -223,16 +217,16 @@ def start_stage(
         provider = db.scalar(
             select(LLMProvider).where(
                 LLMProvider.id == payload.provider_id,
-                LLMProvider.user_id == user.id,
                 LLMProvider.enabled,
             )
         )
         if provider is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider 不存在")
     else:
+        # 单工作区：Provider 共享，未显式指定时取最近创建的一个可用 Provider。
         provider = db.scalar(
             select(LLMProvider)
-            .where(LLMProvider.user_id == user.id, LLMProvider.enabled)
+            .where(LLMProvider.enabled)
             .order_by(LLMProvider.created_at.desc())
         )
     if provider is None:

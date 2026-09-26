@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_project_or_404
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.user import User
@@ -12,20 +12,13 @@ from app.services.code_service import git_commit, git_diff, git_log, git_status,
 router = APIRouter(prefix="/projects/{project_id}/code", tags=["code"])
 
 
-def get_owned_project(project_id: int, user: User, db: Session) -> Project:
-    project = db.get(Project, project_id)
-    if project is None or project.owner_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
-    return project
-
-
 @router.get("/git/status", response_model=GitStatusOut)
 def get_git_status(
     project_id: int,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     return git_status(project_id)
 
 
@@ -35,7 +28,7 @@ def initialize_git(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     try:
         return init_git_repo(project_id)
     except RuntimeError as exc:
@@ -49,7 +42,7 @@ def get_git_log(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     return git_log(project_id, limit)
 
 
@@ -60,7 +53,7 @@ def create_git_commit(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     try:
         return git_commit(project_id, payload.message)
     except (RuntimeError, ValueError) as exc:
@@ -73,7 +66,7 @@ def get_git_diff(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     try:
         return Response(content=git_diff(project_id), media_type="text/plain; charset=utf-8")
     except RuntimeError as exc:
@@ -86,7 +79,7 @@ def get_code_tree(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     return list_code_files(project_id)
 
 
@@ -97,7 +90,7 @@ def get_code_file(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     try:
         content = read_code_file(project_id, path)
     except FileNotFoundError:
@@ -115,7 +108,7 @@ def save_code_file(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     try:
         path = write_code_file(project_id, payload.path, payload.content)
     except ValueError:
@@ -129,7 +122,7 @@ def verify_project_code(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     return run_verify(project_id)
 
 
@@ -139,5 +132,5 @@ def run_project_tests(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    get_owned_project(project_id, user, db)
+    get_project_or_404(project_id, db)
     return run_tests(project_id)

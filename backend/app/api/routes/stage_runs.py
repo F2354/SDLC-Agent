@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_stage_run_or_404
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.stage_run import Artifact, Message, Review, StageRun
@@ -27,13 +27,8 @@ router = APIRouter(prefix="/stage-runs", tags=["stage-runs"])
 
 
 def get_owned_stage_run(run_id: int, user: User, db: Session) -> StageRun:
-    run = db.get(StageRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="阶段运行记录不存在")
-    project = db.get(Project, run.project_id)
-    if project is None or project.owner_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="阶段运行记录不存在")
-    return run
+    """兼容旧调用的薄封装：工作区共享，user 不再参与鉴权。"""
+    return get_stage_run_or_404(run_id, db)
 
 
 @router.get("/{run_id}", response_model=StageRunOut)

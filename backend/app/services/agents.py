@@ -87,14 +87,15 @@ def get_agent_profile(project_id: int, agent_name: str) -> dict[str, Any] | None
     return None
 
 
-def _find_enabled_provider(db: Session, user_id: int, name: str) -> LLMProvider | None:
-    """按名称查找同一用户下已启用的 Provider（供 "provider/model" 写法使用）。"""
+def _find_enabled_provider(db: Session, name: str) -> LLMProvider | None:
+    """按名称查找已启用的 Provider（Provider 在单工作区内共享）。"""
     return db.scalar(
-        select(LLMProvider).where(
-            LLMProvider.user_id == user_id,
+        select(LLMProvider)
+        .where(
             LLMProvider.name == name,
             LLMProvider.enabled.is_(True),
         )
+        .order_by(LLMProvider.id)
     )
 
 
@@ -130,7 +131,7 @@ def resolve_agent_model(
         model_name = model_name.strip()
         if not model_name:
             return fallback
-        candidate = _find_enabled_provider(db, default_provider.user_id, provider_name)
+        candidate = _find_enabled_provider(db, provider_name)
         return (candidate or default_provider), model_name
 
     return default_provider, raw
