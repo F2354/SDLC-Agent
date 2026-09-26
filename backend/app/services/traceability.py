@@ -43,6 +43,22 @@ _RELATIONS = {
 # 单个小节内允许生成的最大关联数，避免异常文档导致组合爆炸。
 _MAX_LINKS_PER_BLOCK = 200
 
+# 各阶段必须产出的实体数量下限（实体类型 → 最少条数）。
+#
+# 这是让追溯矩阵真正有数据的关键：此前用例 UC 在 18 个真实产物中检出数恒为 0，
+# 追溯覆盖率因此永远是 0。该常量同时被两处消费 ——
+# 生成阶段写进提示词（prompts），校验阶段用来判定文档是否合规（stage_service），
+# 从而复用 LangGraph 既有的重试回路去要求模型补齐。
+STAGE_ENTITY_REQUIREMENTS: dict[str, dict[str, int]] = {
+    "requirements": {"RQ": 3, "UC": 2},
+    "architecture": {"MOD": 2},
+    "detailed-design": {"MOD": 2},
+    "testing": {"TC": 3},
+    "unit-test": {"TC": 2},
+    "integration-test": {"TC": 2},
+    "system-test": {"TC": 2},
+}
+
 
 def parse_entities(content: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
@@ -81,6 +97,39 @@ def _defined_keys(content: str) -> dict[str, set[str]]:
         for entity_type, keys in parse_entities(line).items():
             defined[entity_type].update(keys)
     return defined
+
+
+def _build_adjacency(
+    edges: set[tuple[str, str, str, str]],
+) -> dict[tuple[str, str], set[tuple[str, str]]]:
+    """把关系边集合转成邻接表，键与值都是 (实体类型, 实体编号)。"""
+    adjacency: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for from_type, from_key, to_type, to_key in edges:
+        adjacency.setdefault((from_type, from_key), set()).add((to_type, to_key))
+    return adjacency
+
+
+def _reaches(
+    adjacency: dict[tuple[str, str], set[tuple[str, str]]],
+    start: tuple[str, str],
+    target_type: str,
+) -> bool:
+    """从 start 沿关系图出发，能否到达任意 target_type 的实体（允许经中间实体）。
+
+    需求到模块的覆盖通常是「RQ → UC → MOD」两跳，只看直接相邻会低估覆盖率，
+    因此这里按可达性判断，更贴近"这条需求最终有没有落到设计上"的语义。
+    """
+    seen = {start}
+    queue = [start]
+    while queue:
+        current = queue.pop()
+        for neighbour in adjacency.get(current, ()):
+            if neighbour[0] == target_type:
+                return True
+            if neighbour not in seen:
+                seen.add(neighbour)
+                queue.append(neighbour)
+    return False
 
 
 def _artifact_links(content: str) -> set[tuple[str, str, str, str, str]]:
@@ -186,12 +235,10 @@ def compute_traceability(db: Session, project_id: int) -> TraceabilityOut:
     edge_set = {
         (link.from_type, link.from_key, link.to_type, link.to_key) for link in links
     }
+    adjacency = _build_adjacency(edge_set)
 
-    def has_link(from_type: str, from_key: str, to_type: str) -> bool:
-        return any(
-            edge[0] == from_type and edge[1] == from_key and edge[2] == to_type
-            for edge in edge_set
-        )
+    def covered(entity_type: str, key: str, target_type: str) -> bool:
+        return _reaches(adjacency, (entity_type, key), target_type)
 
     rq_keys = sorted(all_entities["RQ"])
     mod_keys = sorted(all_entities["MOD"])
@@ -199,11 +246,11 @@ def compute_traceability(db: Session, project_id: int) -> TraceabilityOut:
 
     coverage = TraceabilityCoverage(
         rq_total=len(rq_keys),
-        rq_with_uc=sum(1 for key in rq_keys if has_link("RQ", key, "UC")),
-        rq_with_mod=sum(1 for key in rq_keys if has_link("RQ", key, "MOD")),
-        rq_with_tc=sum(1 for key in rq_keys if has_link("RQ", key, "TC")),
+        rq_with_uc=sum(1 for key in rq_keys if covered("RQ", key, "UC")),
+        rq_with_mod=sum(1 for key in rq_keys if covered("RQ", key, "MOD")),
+        rq_with_tc=sum(1 for key in rq_keys if covered("RQ", key, "TC")),
         mod_total=len(mod_keys),
-        mod_with_tc=sum(1 for key in mod_keys if has_link("MOD", key, "TC")),
+        mod_with_tc=sum(1 for key in mod_keys if covered("MOD", key, "TC")),
         tc_total=len(tc_keys),
     )
 
@@ -215,12 +262,23 @@ def compute_traceability(db: Session, project_id: int) -> TraceabilityOut:
     coverage.unresolved = unresolved
 
     warnings: list[str] = []
-    if rq_keys and coverage.rq_with_uc == 0:
-        warnings.append("需求条目尚未关联 UC 用例")
-    if rq_keys and coverage.rq_with_mod == 0:
-        warnings.append("需求条目尚未对应 MOD 设计模块")
-    if mod_keys and coverage.mod_with_tc == 0:
-        warnings.append("设计模块尚未覆盖 TC 测试用例")
+    if rq_keys and coverage.rq_with_uc < len(rq_keys):
+        warnings.append(
+            f"需求到用例：{coverage.rq_with_uc}/{len(rq_keys)} 条需求已关联 UC 用例"
+            + ("" if coverage.rq_with_uc else "（用例缺失会让整条追溯链断裂）")
+        )
+    if rq_keys and coverage.rq_with_mod < len(rq_keys):
+        warnings.append(
+            f"需求到模块：{coverage.rq_with_mod}/{len(rq_keys)} 条需求已落到 MOD 设计模块"
+        )
+    if rq_keys and coverage.rq_with_tc < len(rq_keys):
+        warnings.append(
+            f"需求到测试：{coverage.rq_with_tc}/{len(rq_keys)} 条需求已被 TC 用例覆盖"
+        )
+    if mod_keys and coverage.mod_with_tc < len(mod_keys):
+        warnings.append(
+            f"模块到测试：{coverage.mod_with_tc}/{len(mod_keys)} 个模块已被 TC 用例覆盖"
+        )
     if tc_keys and coverage.rq_with_tc == 0 and coverage.mod_with_tc == 0:
         warnings.append("测试用例未关联任何需求或模块")
     if unresolved:

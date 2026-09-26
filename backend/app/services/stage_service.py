@@ -43,7 +43,11 @@ from app.services.agent_roles import get_role_spec
 from app.services.agents import resolve_agent_model
 from app.services.coding_agent import run_coding_harness
 from app.services.artifact_file import write_artifact_file
-from app.services.traceability import rebuild_traceability
+from app.services.traceability import (
+    STAGE_ENTITY_REQUIREMENTS,
+    parse_entities,
+    rebuild_traceability,
+)
 from app.services.process_graph import get_stage_dependencies, group_by_parallel_batch
 
 logger = logging.getLogger("uvicorn.error")
@@ -277,6 +281,32 @@ class AgentState(TypedDict):
     traceability_summary: str
 
 
+def _entity_gap(stage_code: str, text: str) -> str:
+    """检查阶段必需的规范编号实体是否齐备，返回不合格原因（空串表示通过）。
+
+    这是让追溯矩阵有数据的关键一环：提示词写明了编号约定，但模型并不总会遵守
+    （实测 18 个产物中 UC 检出恒为 0）。把实体要求放进文档校验，
+    就能复用 LangGraph 的重试回路要求模型补齐，而不是事后在报表上打补丁。
+    """
+    requirements = STAGE_ENTITY_REQUIREMENTS.get(stage_code)
+    if not requirements:
+        return ""
+    found = parse_entities(text)
+    problems = [
+        f"{entity_type} 至少 {minimum} 条（当前 {len(found.get(entity_type, ()))} 条）"
+        for entity_type, minimum in requirements.items()
+        if len(found.get(entity_type, ())) < minimum
+    ]
+    if not problems:
+        return ""
+    return (
+        "文档缺少规范编号的实体：" + "、".join(problems) + "。"
+        "请为每个条目使用独立三级标题并标注编号，例如 `### 需求条目 RQ-001`、"
+        "`### 用例 UC-001`；用例须在正文标注来源需求（如「来源：RQ-001」），"
+        "模块须标注实现的需求或用例，测试用例须标注验证的需求或模块。"
+    )
+
+
 def validate_document(stage_code: str, content: str) -> str:
     """校验生成文档的完整性。返回空字符串表示通过，否则返回不合格原因。"""
     text = (content or "").strip()
@@ -285,7 +315,7 @@ def validate_document(stage_code: str, content: str) -> str:
     missing = [hint for hint in _STAGE_REQUIRED_HINTS.get(stage_code, ()) if hint not in text]
     if missing:
         return "文档缺少关键内容：" + "、".join(missing) + "。请补齐后重新输出完整文档。"
-    return ""
+    return _entity_gap(stage_code, text)
 
 
 def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  # noqa: ARG001

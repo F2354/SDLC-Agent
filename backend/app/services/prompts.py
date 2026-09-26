@@ -1,3 +1,25 @@
+from app.services.traceability import STAGE_ENTITY_REQUIREMENTS
+
+# 实体类型的中文名，用于提示词与校验信息。
+ENTITY_LABELS = {"RQ": "需求条目", "UC": "用例", "MOD": "模块", "TC": "测试用例"}
+
+
+def entity_requirement_text(stage_code: str) -> str:
+    """把该阶段的实体配额写成提示词条目。
+
+    与 ``stage_service`` 的文档校验共用 ``STAGE_ENTITY_REQUIREMENTS``，
+    保证"提示词要求什么"与"校验检查什么"不会漂移。
+    """
+    requirements = STAGE_ENTITY_REQUIREMENTS.get(stage_code)
+    if not requirements:
+        return ""
+    parts = [
+        f"{ENTITY_LABELS.get(key, key)} {key}-xxx 至少 {count} 条"
+        for key, count in requirements.items()
+    ]
+    return "本阶段必须产出规范编号的实体：" + "、".join(parts) + "。"
+
+
 STAGE_ROLE = {
     "requirements": (
         "需求分析师",
@@ -184,6 +206,7 @@ def build_stage_prompt(
         stage_code, ["概述", "详细设计", "补充说明"]
     )
     section_text = "\n".join(f"{index}. {section}" for index, section in enumerate(sections, start=1))
+    entity_text = entity_requirement_text(stage_code)
 
     system = (
         f"你是一名{role}。{instruction}\n"
@@ -204,6 +227,13 @@ def build_stage_prompt(
         "测试用例标注验证的需求或模块，便于自动生成追溯矩阵。\n"
         "5. 内容必须与前置产物保持一致，不能凭空发明未出现的功能。"
     )
+    if entity_text:
+        user += (
+            "\n6. " + entity_text
+            + "\n7. 关联必须写成可直接解析的形式：在实体小节正文中显式写出被引用编号，"
+            "例如用例小节内写「来源：RQ-001」，模块小节内写「实现：RQ-001、UC-001」，"
+            "测试用例小节内写「验证：RQ-001、MOD-001」。"
+        )
     return system, user
 
 
