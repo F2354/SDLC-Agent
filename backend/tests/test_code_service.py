@@ -145,3 +145,35 @@ def test_project_agent_profiles_and_permissions(client, project_folder):
     response = client.get(f"/api/projects/{project_id}/agents", headers=headers)
     assert response.status_code == 200
     assert response.json()[0]["permissions"]["bash"] == "deny"
+
+
+def test_subprocess_env_keeps_windows_system_vars(client, project_folder):
+    r"""子进程环境必须保留 SystemDrive 等系统变量。
+
+    缺 SystemDrive 时，Windows 组件会把 "%SystemDrive%\ProgramData\..."
+    当字面量路径、在子进程 CWD 下建出真实目录（已在真实运行中复现）。
+    """
+    import os
+
+    from app.services.code_service import subprocess_env
+
+    username = unique_name("env_owner")
+    reg = client.post(
+        "/api/auth/register",
+        json={"username": username, "password": "secret123"},
+    )
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={
+            "name": "子进程环境项目",
+            "process_model_code": "waterfall",
+            "folder": project_folder,
+        },
+    )
+    env = subprocess_env(project.json()["id"])
+
+    for key in ("SystemDrive", "SystemRoot", "COMSPEC", "TEMP"):
+        if os.environ.get(key) is not None:
+            assert env.get(key) == os.environ[key], f"子进程环境缺少 {key}"

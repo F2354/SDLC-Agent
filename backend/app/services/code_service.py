@@ -145,6 +145,9 @@ _ENV_PASSTHROUGH = (
     "PATHEXT",
     "SYSTEMROOT",
     "SystemRoot",
+    # 缺 SystemDrive 时，Windows 组件会把 "%SystemDrive%\ProgramData\..."
+    # 当字面量路径、在子进程 CWD 下建出真实目录（实测会发生）。
+    "SystemDrive",
     "COMSPEC",
     "TEMP",
     "TMP",
@@ -153,6 +156,8 @@ _ENV_PASSTHROUGH = (
     "USERPROFILE",
     "APPDATA",
     "LOCALAPPDATA",
+    "ALLUSERSPROFILE",
+    "PROGRAMDATA",
     "LANG",
     "LC_ALL",
     "TERM",
