@@ -1,5 +1,6 @@
 import atexit
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TypedDict
@@ -43,7 +44,7 @@ from app.services.agents import resolve_agent_model
 from app.services.coding_agent import run_coding_harness
 from app.services.artifact_file import write_artifact_file
 from app.services.traceability import rebuild_traceability
-from app.services.process_graph import get_stage_dependencies
+from app.services.process_graph import get_stage_dependencies, group_by_parallel_batch
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -65,6 +66,19 @@ def shutdown_stage_executor(wait: bool = False) -> None:
 
 
 atexit.register(shutdown_stage_executor)
+
+
+# 每个项目一把自动推进锁。
+# 并行通道（如 V 模型的三条验证通道）会在不同线程里各自触发自动推进，
+# 若不加锁，"检查下游是否已启动 → 创建 run" 这段会在多个线程中交错执行，
+# 导致同一个下游阶段被重复启动。锁内先结束旧事务，确保读到其它通道刚提交的数据。
+_advance_locks: dict[int, threading.Lock] = {}
+_advance_locks_guard = threading.Lock()
+
+
+def _project_advance_lock(project_id: int) -> threading.Lock:
+    with _advance_locks_guard:
+        return _advance_locks.setdefault(project_id, threading.Lock())
 
 
 # 需求阶段对话系统提示词（供聊天接口默认使用）。
@@ -818,7 +832,11 @@ def execute_stage_run(stage_run_id: int) -> None:
         try:
             stage = db.get(Stage, run.stage_id)
             project = db.get(Project, run.project_id)
-            provider = db.get(LLMProvider, run.provider_id)
+            # provider_id 可能为空（如测试数据或历史记录），显式判空避免
+            # SQLAlchemy 对 NULL 主键发起查询并告警。
+            provider = (
+                db.get(LLMProvider, run.provider_id) if run.provider_id else None
+            )
             if stage is None or project is None:
                 raise ValueError("阶段或项目不存在")
             if provider is None or not provider.enabled:
@@ -979,7 +997,7 @@ def serialize_stage_run(run: StageRun, db: Session) -> StageRunOut:
 
 
 def _get_runnable_provider(run: StageRun, db: Session) -> LLMProvider:
-    provider = db.get(LLMProvider, run.provider_id)
+    provider = db.get(LLMProvider, run.provider_id) if run.provider_id else None
     if provider is None or not provider.enabled:
         raise ValueError("请先配置可用的模型 Provider")
     return provider
@@ -1329,50 +1347,135 @@ def _ready_stage_codes(db: Session, project: Project) -> list[Stage]:
     return ready
 
 
-def _maybe_auto_advance(run: StageRun, db: Session) -> list[StageRun]:
-    """Start every newly-unblocked stage, not only the next sequential stage."""
-    project = db.get(Project, run.project_id)
-    if project is None or not project.auto_advance:
-        return []
-    started: list[StageRun] = []
-    for stage in _ready_stage_codes(db, project):
-        new_run = StageRun(
-            project_id=project.id,
-            stage_id=stage.id,
-            provider_id=run.provider_id,
-            status="pending",
-            mode="auto",
+def _all_stages_finished(db: Session, project: Project) -> bool:
+    """所有阶段都已有最新运行且均已通过/完成。"""
+    stages = list(
+        db.scalars(
+            select(Stage).where(Stage.process_model_id == project.process_model_id)
         )
-        db.add(new_run)
-        db.flush()
-        db.add(
-            ActivityEvent(
-                project_id=project.id,
-                stage_run_id=new_run.id,
-                event_type="coordinator",
-                message=f"统筹 Agent 自动启动阶段「{stage.name}」",
+    )
+    if not stages:
+        return False
+    latest: dict[int, StageRun] = {}
+    for row in db.scalars(
+        select(StageRun)
+        .where(StageRun.project_id == project.id)
+        .order_by(StageRun.id.desc())
+    ):
+        latest.setdefault(row.stage_id, row)
+    return len(latest) == len(stages) and all(
+        row.status in {"approved", "completed"} for row in latest.values()
+    )
+
+
+def _maybe_auto_advance(run: StageRun, db: Session) -> list[StageRun]:
+    """启动所有新解锁的阶段；同一并行批次会一起启动并广播批次事件。
+
+    并行通道会在不同线程里各自触发本函数，因此整个过程持有项目级锁：
+    锁内先结束旧事务，确保读到其它通道刚刚提交的状态，
+    避免同一个下游阶段被重复启动。
+    """
+    project_id = run.project_id
+    provider_id = run.provider_id
+
+    with _project_advance_lock(project_id):
+        # 先结束可能残留的旧事务，否则会读到其它并行通道提交之前的快照。
+        db.rollback()
+        project = db.get(Project, project_id)
+        if project is None or not project.auto_advance:
+            return []
+
+        ready = _ready_stage_codes(db, project)
+        if not ready:
+            if _all_stages_finished(db, project):
+                publish(project.id, "stage_completed", {"message": "全部阶段已完成"})
+            return []
+
+        all_stages = list(
+            db.scalars(
+                select(Stage)
+                .where(Stage.process_model_id == project.process_model_id)
+                .order_by(Stage.seq)
             )
         )
-        started.append(new_run)
-    if not started:
-        stages = list(db.scalars(select(Stage).where(Stage.process_model_id == project.process_model_id)))
-        latest_statuses = [
-            item.status
-            for item in db.scalars(select(StageRun).where(StageRun.project_id == project.id))
-        ]
-        if stages and latest_statuses and all(status in {"approved", "completed"} for status in latest_statuses):
-            publish(project.id, "stage_completed", {"message": "全部阶段已完成"})
-        return []
-    db.commit()
-    for new_run in started:
-        stage = db.get(Stage, new_run.stage_id)
-        publish(
-            project.id,
-            "stage_status",
-            {"stage_run_id": new_run.id, "stage_code": stage.code if stage else "", "status": "pending"},
+        ordered_codes = [item.code for item in all_stages]
+        batches = group_by_parallel_batch(
+            project.process_model.code,
+            [item.code for item in ready],
+            ordered_codes,
         )
-        start_stage_run_async(new_run.id)
-    return started
+        batch_of: dict[str, list[str]] = {
+            code: batch for batch in batches for code in batch
+        }
+
+        started: list[StageRun] = []
+        run_by_stage: dict[str, StageRun] = {}
+        for stage in ready:
+            new_run = StageRun(
+                project_id=project.id,
+                stage_id=stage.id,
+                provider_id=provider_id,
+                status="pending",
+                mode="auto",
+            )
+            db.add(new_run)
+            db.flush()
+            started.append(new_run)
+            run_by_stage[stage.code] = new_run
+            db.add(
+                ActivityEvent(
+                    project_id=project.id,
+                    stage_run_id=new_run.id,
+                    event_type="coordinator",
+                    message=f"统筹 Agent 自动启动阶段「{stage.name}」",
+                )
+            )
+        # 先落库再广播：这样其它并行通道的自动推进能看到这些 run，不会重复创建。
+        db.commit()
+
+        for batch in batches:
+            if len(batch) < 2:
+                continue
+            names = [
+                item.name for item in ready if item.code in set(batch)
+            ]
+            summary = "、".join(names)
+            publish(
+                project.id,
+                "parallel_batch",
+                {
+                    "stage_codes": batch,
+                    "stage_run_ids": [
+                        run_by_stage[code].id
+                        for code in batch
+                        if code in run_by_stage
+                    ],
+                    "lane_count": len(batch),
+                    "message": f"并行启动 {len(batch)} 条通道：{summary}",
+                },
+            )
+            db.add(
+                ActivityEvent(
+                    project_id=project.id,
+                    event_type="parallel_batch",
+                    message=f"统筹 Agent 并行启动 {len(batch)} 条通道：{summary}",
+                )
+            )
+        db.commit()
+
+        for new_run in started:
+            stage = db.get(Stage, new_run.stage_id)
+            publish(
+                project.id,
+                "stage_status",
+                {
+                    "stage_run_id": new_run.id,
+                    "stage_code": stage.code if stage else "",
+                    "status": "pending",
+                },
+            )
+            start_stage_run_async(new_run.id)
+        return started
 
 
 def serialize_message(message: Message) -> MessageOut:
