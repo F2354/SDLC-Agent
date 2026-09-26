@@ -26,9 +26,13 @@ from dataclasses import dataclass, field
 
 # 工具按能力分组，角色用「并集」表达自己的子集。
 READ_TOOLS = frozenset({"list_files", "read_file"})
-WRITE_TOOLS = frozenset({"write_file", "edit_file"})
+WRITE_TOOLS = frozenset(
+    {"write_file", "edit_file", "write_files", "edit_files"}
+)
 SHELL_TOOLS = frozenset({"run_command", "run_tests"})
 GIT_TOOLS = frozenset({"git_status", "git_diff", "git_log", "git_commit"})
+# 只读的 Git 能力：能看历史与差异，但不能产生提交。
+GIT_READ_TOOLS = frozenset({"git_status", "git_diff", "git_log"})
 
 ALL_TOOLS = READ_TOOLS | WRITE_TOOLS | SHELL_TOOLS | GIT_TOOLS
 
@@ -126,22 +130,24 @@ _REVIEWER = AgentRoleSpec(
     code="reviewer",
     name="评审",
     duty="对阶段产物做完整性与一致性审查，给出通过或修改建议。",
-    toolset=READ_TOOLS | GIT_TOOLS,
+    toolset=READ_TOOLS | GIT_READ_TOOLS,
     output_contract=(
         "输出检查清单逐项结论与一致性问题；引用制品中的实体编号作为证据。"
     ),
     write_target="",
-    extra_rules=("你没有写权限：评审结论只能作为意见输出，不得修改任何产物。",),
+    extra_rules=(
+        "你没有写权限：评审结论只能作为意见输出，不得修改任何产物，也不能产生提交。",
+    ),
 )
 
 _COORDINATOR = AgentRoleSpec(
     code="coordinator",
     name="统筹协调",
     duty="调度阶段 agent、汇总各阶段上下文，向用户汇报进展与下一步建议。",
-    toolset=READ_TOOLS | GIT_TOOLS,
+    toolset=READ_TOOLS | GIT_READ_TOOLS,
     output_contract="汇总说明与下一步建议；不产出实体编号，不直接修改产物。",
     write_target="",
-    extra_rules=("你没有写权限，职责是统筹与汇总。",),
+    extra_rules=("你没有写权限，职责是统筹与汇总；Git 仅可读。",),
 )
 
 

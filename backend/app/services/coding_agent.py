@@ -20,6 +20,7 @@ from app.services.code_service import (
     code_root,
     commit_project_changes,
     edit_code_file,
+    edit_many_files,
     git_diff,
     git_log,
     git_status,
@@ -30,6 +31,7 @@ from app.services.code_service import (
     run_verify,
     subprocess_env,
     write_code_file,
+    write_many_files,
 )
 from app.services.llm_service import build_openai_client
 from app.services.skills import skill_context
@@ -96,6 +98,66 @@ TOOLS = [
                     "target": _TARGET_PROPERTY,
                 },
                 "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_files",
+            "description": (
+                "一次写入或覆盖多个文件（多文件协同编辑）。"
+                "适合一次建出整个项目骨架，比逐个 write_file 更高效；"
+                "若中途失败会自动回滚，不留半成品。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "description": "要写入的文件列表。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["path", "content"],
+                        },
+                    },
+                    "target": _TARGET_PROPERTY,
+                },
+                "required": ["files"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_files",
+            "description": (
+                "跨多个文件批量替换文本（协同修改）。适合重命名、改接口签名等"
+                "需要多文件同步修改的场景；全部替换都校验通过后才落盘，是全有或全无的。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "array",
+                        "description": "要应用的替换列表。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "old_string": {"type": "string"},
+                                "new_string": {"type": "string"},
+                            },
+                            "required": ["path", "old_string", "new_string"],
+                        },
+                    },
+                    "target": _TARGET_PROPERTY,
+                },
+                "required": ["edits"],
             },
         },
     },
@@ -372,6 +434,12 @@ def execute_tool(
                 target,
             )
             return {"ok": True, "path": path, "target": target}
+        if name == "write_files":
+            result = write_many_files(project_id, args.get("files"), target)
+            return {"ok": True, **result}
+        if name == "edit_files":
+            result = edit_many_files(project_id, args.get("edits"), target)
+            return {"ok": True, **result}
         if name == "run_command":
             return _execute_command(project_id, args["command"])
         if name == "run_tests":
@@ -420,7 +488,9 @@ def _agent_goal_reached(agent_code: str, verify, tests) -> bool:
 _ROLE_TASKS: dict[str, str] = {
     "developer": (
         "请利用工具生成完整可运行的 FastAPI 项目，必须包含 requirements.txt、app/main.py、"
-        "app/models.py、README.md、tests/test_app.py。完成后运行验证与测试，直到通过。"
+        "app/models.py、README.md、tests/test_app.py。"
+        "建议用 write_files 一次写入多个文件建立骨架，再用 edit_file / edit_files 做局部修改。"
+        "完成后运行验证与测试，直到通过。"
     ),
     "tester": (
         "请先用 read_file（target=code）阅读已有实现，再在 tests/ 目录下编写 pytest 测试，"

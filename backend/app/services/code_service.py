@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import subprocess
@@ -10,6 +11,8 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.project import Project
 from app.schemas.code import CodeFileOut, CodeRunOut, CodeTreeOut
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def _project_root(project_id: int) -> Path:
@@ -226,6 +229,111 @@ def write_files(
         path.write_text(body, encoding="utf-8")
         written.append(relative_path)
     return written
+
+
+def _coerce_entries(items: object, required: tuple[str, ...], what: str) -> list[dict]:
+    """校验批量操作的入参结构，尽早失败，避免写到一半才发现参数不对。"""
+    if not isinstance(items, list) or not items:
+        raise ValueError(f"{what} 至少需要一项")
+    normalized: list[dict] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"{what} 第 {index + 1} 项格式不正确")
+        missing = [key for key in required if key not in item]
+        if missing:
+            raise ValueError(
+                f"{what} 第 {index + 1} 项缺少字段：" + "、".join(missing)
+            )
+        path = str(item.get("path") or "").strip()
+        if not path:
+            raise ValueError(f"{what} 第 {index + 1} 项的路径为空")
+        normalized.append({**item, "path": path})
+    return normalized
+
+
+def write_many_files(
+    project_id: int,
+    files: object,
+    target: Literal["code", "tests"] = "code",
+) -> dict:
+    """一次写入多个文件（多文件协同编辑）。
+
+    先把全部路径解析校验一遍，再逐个写入；若中途失败，则把本次已经写入的
+    文件还原（新建的删除、覆盖的恢复原内容），不留下半成品。
+    """
+    entries = _coerce_entries(files, ("path", "content"), "files")
+    base = _target_dir(project_id, target)
+
+    # 路径全部先解析，越界或非法会在这里就抛错，此时尚未落盘。
+    resolved = [(path, str(item.get("content") or "")) for path, item in
+                ((_safe_path(base, entry["path"]), entry) for entry in entries)]
+
+    backups: list[tuple[Path, str | None]] = []
+    written: list[str] = []
+    try:
+        for path, content in resolved:
+            backups.append(
+                (path, path.read_text(encoding="utf-8") if path.is_file() else None)
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            written.append(path.relative_to(base).as_posix())
+    except OSError as exc:
+        for path, original in reversed(backups):
+            try:
+                if original is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(original, encoding="utf-8")
+            except OSError:
+                logger.warning("回滚文件失败: %s", path)
+        raise ValueError(f"批量写入失败，已回滚本次改动：{exc}") from exc
+
+    return {"target": target, "count": len(written), "files": written}
+
+
+def edit_many_files(
+    project_id: int,
+    edits: object,
+    target: Literal["code", "tests"] = "code",
+) -> dict:
+    """跨文件批量替换（协同修改）。
+
+    全部改动先在内存中应用并校验，**全部通过后才落盘**，
+    因此天然是全有或全无，不会出现改了一半的中间状态。
+    """
+    entries = _coerce_entries(
+        edits, ("path", "old_string", "new_string"), "edits"
+    )
+    base = _target_dir(project_id, target)
+
+    staged: dict[Path, str] = {}
+    order: list[Path] = []
+    for entry in entries:
+        old = entry.get("old_string")
+        new = entry.get("new_string")
+        if not isinstance(old, str) or not old:
+            raise ValueError(f"{entry['path']} 的 old_string 不能为空")
+        if not isinstance(new, str):
+            raise ValueError(f"{entry['path']} 的 new_string 必须是字符串")
+
+        path = _safe_path(base, entry["path"])
+        if path not in staged:
+            if not path.is_file():
+                raise FileNotFoundError(f"文件不存在：{entry['path']}")
+            staged[path] = path.read_text(encoding="utf-8")
+            order.append(path)
+        if old not in staged[path]:
+            raise ValueError(f"未在 {entry['path']} 中找到要替换的内容")
+
+        staged[path] = staged[path].replace(old, new, 1)
+
+    written: list[str] = []
+    for path in order:
+        path.write_text(staged[path], encoding="utf-8")
+        written.append(path.relative_to(base).as_posix())
+
+    return {"target": target, "count": len(written), "files": written}
 
 
 

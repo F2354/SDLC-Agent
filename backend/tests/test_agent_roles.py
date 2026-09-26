@@ -76,12 +76,14 @@ def test_all_code_stages_are_bound_to_a_tool_loop_role():
 
 
 def test_reviewer_and_coordinator_are_read_only():
-    """评审与统筹必须只读：评审不可修改被评审的产物。"""
+    """评审与统筹必须只读：评审不可修改被评审的产物，也不能产生提交。"""
     for code in ("reviewer", "coordinator"):
         toolset = role_tool_names(code)
         assert not (toolset & WRITE_TOOLS), f"{code} 不应拥有写工具"
         assert not (toolset & SHELL_TOOLS), f"{code} 不应拥有命令工具"
+        assert "git_commit" not in toolset, f"{code} 不应能产生提交"
         assert "read_file" in toolset
+        assert "git_log" in toolset
 
 
 def test_document_roles_cannot_execute_commands():
