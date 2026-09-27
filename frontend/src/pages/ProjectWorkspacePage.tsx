@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from 'react'
 import { useSearchParams, useParams } from 'react-router-dom'
 
 import {
@@ -187,6 +187,16 @@ function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart, liveT
       { left: left.find(({ stage }) => stage.code === 'architecture'), right: right.find(({ stage }) => stage.code === 'integration-test'), label: '集成验证' },
       { left: left.find(({ stage }) => stage.code === 'detailed-design'), right: right.find(({ stage }) => stage.code === 'unit-test'), label: '模块验证' },
     ].filter((pair): pair is { left: ProjectFlow['stages'][number]; right: ProjectFlow['stages'][number]; label: string } => Boolean(pair.left && pair.right))
+    // 配对线激活：任一端在生成中，对应 V 线高亮加速，直观呈现"验证正在对照设计"。
+    const isBusy = (item?: ProjectFlow['stages'][number]) =>
+      !!item && (item.status === 'generating' || item.status === 'collecting')
+    const pairPaths = [
+      { d: 'M 25 16 L 50 84 L 75 16', cls: '' },
+      { d: 'M 25 40 L 50 84 L 75 40', cls: 'flow-line-strong' },
+      { d: 'M 25 64 L 50 84 L 75 64', cls: 'flow-line-soft' },
+    ]
+    // pairs 顺序与路径一一对应：requirements↔system-test、architecture↔integration-test、detailed-design↔unit-test
+    const pairActive = [isBusy(pairs[0]?.left) || isBusy(pairs[0]?.right), isBusy(pairs[1]?.left) || isBusy(pairs[1]?.right), isBusy(pairs[2]?.left) || isBusy(pairs[2]?.right)]
 
     return (
       <div className="process-flow process-flow-v-model">
@@ -211,9 +221,13 @@ function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart, liveT
             ))}
           </div>
           <svg className="v-branch-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-            <path className="flow-line" d="M 25 16 L 50 84 L 75 16" />
-            <path className="flow-line flow-line-strong" d="M 25 40 L 50 84 L 75 40" />
-            <path className="flow-line flow-line-soft" d="M 25 64 L 50 84 L 75 64" />
+            {pairPaths.map((path, i) => (
+              <path
+                key={path.d}
+                className={`flow-line ${path.cls}${pairActive[i] ? ' flow-line-active' : ''}`}
+                d={path.d}
+              />
+            ))}
           </svg>
         </div>
         <div className="flow-legend"><span><i className="legend-dot legend-main" />开发主线</span><span><i className="legend-dot legend-test" />测试对应</span><span><i className="legend-dot legend-back" />结果可回溯</span></div>
@@ -321,8 +335,9 @@ function FlowNode({ item, index, startDisabled, starting, canStartAt, onStart, l
   // 运行中优先展示实时工具调用；运行结束后回落到已落库的统计。
   const live = stage_run_id != null ? liveTools[stage_run_id] : undefined
   const running = status === 'generating' || status === 'collecting'
-  const usage = running && live && live.length > 0 ? live : tool_usage
-  const total = running && live && live.length > 0 ? live.reduce((sum, tool) => sum + tool.count, 0) : tool_call_count
+  const hasLive = running && !!live && live.length > 0
+  const usage = hasLive ? live! : tool_usage
+  const total = hasLive ? live!.reduce((sum, tool) => sum + tool.count, 0) : tool_call_count
   const topTools = usage.slice(0, 3)
   const contractTitle = contract
     ? [
@@ -332,8 +347,18 @@ function FlowNode({ item, index, startDisabled, starting, canStartAt, onStart, l
       ].filter(Boolean).join('\n')
     : undefined
   return (
-    <div className={`flow-node ${flowStatusClass(status)} ${className}`} title={contractTitle || stage.description || stage.name}>
-      <div className="flow-node-topline"><span className="flow-node-index">{String(index + 1).padStart(2, '0')}</span><span className="flow-node-status">{statusLabels[status] ?? status}</span></div>
+    <div
+      className={`flow-node ${flowStatusClass(status)} ${hasLive ? 'is-live' : ''} ${className}`}
+      style={{ '--node-i': index } as CSSProperties}
+      title={contractTitle || stage.description || stage.name}
+    >
+      <div className="flow-node-topline">
+        <span className="flow-node-index">{String(index + 1).padStart(2, '0')}</span>
+        <span className="flow-node-status">
+          {running && <span className="live-dot" aria-hidden="true" />}
+          {statusLabels[status] ?? status}
+        </span>
+      </div>
       <div className="flow-node-title">{stage.name}</div>
       <div className="flow-node-agent"><span className="flow-agent-icon">{agent.icon}</span><span>{roleName}</span><b>{agent.short}</b></div>
       {model && <div className="flow-node-model" title="执行模型">{model}</div>}
@@ -341,13 +366,13 @@ function FlowNode({ item, index, startDisabled, starting, canStartAt, onStart, l
         <div className="flow-node-pair" title={`配对验证：与「${contract.pair_stage_name ?? contract.pair_stage}」互为验证关系`}>⇄ {contract.pair_stage_name ?? contract.pair_stage}</div>
       )}
       {topTools.length > 0 && (
-        <div className={`flow-node-tools${running ? ' is-live' : ''}`} title={`共 ${total} 次工具调用`}>
+        <div className={`flow-node-tools${hasLive ? ' is-live' : ''}`} title={`共 ${total} 次工具调用`}>
           {topTools.map((entry) => <span className="flow-tool-chip" key={entry.tool}>{entry.tool}<i>×{entry.count}</i></span>)}
           {usage.length > topTools.length && <span className="flow-tool-more">+{usage.length - topTools.length}</span>}
         </div>
       )}
       {parallel_peers.length > 0 && status !== 'pending' && (
-        <div className="flow-node-parallel" title={`与该阶段并行执行：${parallel_peers.join('、')}`}>并行通道 ×{parallel_peers.length + 1}</div>
+        <div className="flow-node-parallel" title={`与该阶段并行执行：${parallel_peers.join('、')}`}><i className="parallel-pulse" aria-hidden="true" />并行通道 ×{parallel_peers.length + 1}</div>
       )}
       {(canStart || retry) && <div className="flow-node-actions">{canStart && canChat && <button onClick={() => onStart(stage.code, 'chat')} disabled={starting === stage.code || startDisabled}>对话</button>}<button onClick={() => onStart(stage.code, 'auto')} disabled={starting === stage.code || startDisabled}>{starting === stage.code ? '启动中' : retry ? '重试' : '自动'}</button></div>}
     </div>
