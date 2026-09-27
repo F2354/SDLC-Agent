@@ -616,7 +616,7 @@ def run_coding_harness(
     project_name: str,
     project_description: str,
     previous_artifacts: str,
-    max_turns: int = 8,
+    max_turns: int = 10,
     model_name: str | None = None,
     agent_code: str = "developer",
     stage_run_id: int | None = None,
@@ -743,12 +743,28 @@ def run_coding_harness(
                     tool_log=tool_log,
                 )
             if turn < max_turns - 1:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "验证仍未通过，请继续使用工具修复。",
-                    }
-                )
+                # 轮数充裕时温和催办；临近耗尽时升级为明确的收官指令，
+                # 禁止继续读取文件（实测模型会陷入"读取循环"耗尽轮数）。
+                if max_turns - turn <= 3:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[收官指令] 剩余轮数已不多，禁止再读取任何文件。"
+                                "立即依次执行：1) 用 write_files 一次性写入全部缺失文件"
+                                "（必须包含 app/main.py、requirements.txt、tests/test_app.py）；"
+                                "2) 调用 run_tests 查看结果；3) 如有失败用 edit_files 修复后"
+                                "再次运行，直到通过。"
+                            ),
+                        }
+                    )
+                else:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "验证仍未通过，请继续使用工具修复。",
+                        }
+                    )
 
     return CodingResult(
         ok=False,

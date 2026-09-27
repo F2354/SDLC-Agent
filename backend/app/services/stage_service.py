@@ -789,7 +789,7 @@ def execute_coding_harness_stage(
         project_name=project.name,
         project_description=project.description,
         previous_artifacts=previous_artifacts,
-        max_turns=8,
+        max_turns=10,
         model_name=model_name,
         agent_code=agent_code,
         stage_run_id=run.id,
