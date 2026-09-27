@@ -20,6 +20,7 @@ from app.schemas.project import (
     ProjectFlowStage,
     ProjectOut,
     ProjectUpdate,
+    StageContractOut,
     StageOut,
     ToolUsageOut,
 )
@@ -41,6 +42,7 @@ from app.services.stage_service import (
 from app.services.traceability import compute_traceability
 from app.services.agent_roles import get_role_spec
 from app.services.process_graph import get_parallel_siblings, get_stage_dependencies
+from app.services.stage_contracts import stage_contract
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -387,11 +389,20 @@ def _build_flow_stage(
     run: StageRun | None,
     model_code: str,
     stage_codes: list[str],
+    stage_names: dict[str, str] | None = None,
 ) -> ProjectFlowStage:
     """把阶段定义与其最近一次运行合成流程节点，供过程模型视图使用。"""
     role_code = run.agent_code if run is not None else None
     role_name = get_role_spec(role_code).name if role_code else None
     tool_usage = _parse_tool_usage(run.tool_usage_json if run is not None else None)
+    contract = stage_contract(model_code, stage.code)
+    contract_out = StageContractOut(
+        inputs=list(contract.inputs) if contract.inputs is not None else None,
+        outputs=dict(contract.outputs),
+        pair_stage=contract.pair_stage,
+        pair_stage_name=(stage_names or {}).get(contract.pair_stage or ""),
+        note=contract.note,
+    )
     return ProjectFlowStage(
         stage=StageOut.model_validate(stage),
         status=run.status if run is not None else "pending",
@@ -403,6 +414,7 @@ def _build_flow_stage(
         tool_usage=tool_usage,
         tool_call_count=sum(item.count for item in tool_usage),
         parallel_peers=get_parallel_siblings(model_code, stage.code, stage_codes),
+        contract=contract_out,
     )
 
 
@@ -432,6 +444,7 @@ def project_flow(
         if run.stage_id not in latest_runs:
             latest_runs[run.stage_id] = run
     stage_codes = [item.code for item in stages]
+    stage_names = {item.code: item.name for item in stages}
     return ProjectFlowOut(
         process_model=project.process_model,
         auto_advance=project.auto_advance,
@@ -441,6 +454,7 @@ def project_flow(
                 latest_runs.get(stage.id),
                 project.process_model.code,
                 stage_codes,
+                stage_names,
             )
             for stage in stages
         ],

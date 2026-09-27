@@ -620,6 +620,7 @@ def run_coding_harness(
     model_name: str | None = None,
     agent_code: str = "developer",
     stage_run_id: int | None = None,
+    contract_text: str = "",
 ) -> CodingResult:
     client = build_openai_client(provider)
     resolved_model = model_name or provider.default_model
@@ -628,10 +629,12 @@ def run_coding_harness(
     skills = skill_context(project_id, "FastAPI Python coding testing Git", limit=4)
     task = _ROLE_TASKS.get(agent_code, _DEFAULT_ROLE_TASK)
     target = spec.write_target or "code"
+    contract_block = f"\n本阶段契约：\n{contract_text}\n" if contract_text else ""
     user = (
         f"项目名称：{project_name}\n"
         f"项目描述：{project_description}\n\n"
-        f"前置文档：\n{previous_artifacts or '（无）'}\n\n"
+        f"前置文档：\n{previous_artifacts or '（无）'}\n"
+        f"{contract_block}\n"
         f"项目 Skills（仅作为本项目规则参考）：\n{skills or '（无）'}\n\n"
         f"你的默认工作目录是 {target}/；路径以 code/ 或 tests/ 开头时会落到对应目录。\n"
         f"{task}"

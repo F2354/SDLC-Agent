@@ -312,7 +312,7 @@ function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart, liveT
 }
 
 function FlowNode({ item, index, startDisabled, starting, canStartAt, onStart, liveTools, className = '' }: FlowNodeProps) {
-  const { stage, status, stage_run_id, agent_role_name, model, tool_usage, tool_call_count, parallel_peers } = item
+  const { stage, status, stage_run_id, agent_role_name, model, tool_usage, tool_call_count, parallel_peers, contract } = item
   const agent = getAgent(stage.code)
   const roleName = agent_role_name ?? agent.name
   const canStart = status === 'pending' && canStartAt(index)
@@ -324,12 +324,22 @@ function FlowNode({ item, index, startDisabled, starting, canStartAt, onStart, l
   const usage = running && live && live.length > 0 ? live : tool_usage
   const total = running && live && live.length > 0 ? live.reduce((sum, tool) => sum + tool.count, 0) : tool_call_count
   const topTools = usage.slice(0, 3)
+  const contractTitle = contract
+    ? [
+        contract.inputs && contract.inputs.length > 0 ? `输入契约：${contract.inputs.join('、')}` : contract.inputs && contract.inputs.length === 0 ? '输入契约：流程起点' : null,
+        contract.pair_stage ? `配对验证：与「${contract.pair_stage_name ?? contract.pair_stage}」互为验证` : null,
+        contract.note,
+      ].filter(Boolean).join('\n')
+    : undefined
   return (
-    <div className={`flow-node ${flowStatusClass(status)} ${className}`} title={stage.description || stage.name}>
+    <div className={`flow-node ${flowStatusClass(status)} ${className}`} title={contractTitle || stage.description || stage.name}>
       <div className="flow-node-topline"><span className="flow-node-index">{String(index + 1).padStart(2, '0')}</span><span className="flow-node-status">{statusLabels[status] ?? status}</span></div>
       <div className="flow-node-title">{stage.name}</div>
       <div className="flow-node-agent"><span className="flow-agent-icon">{agent.icon}</span><span>{roleName}</span><b>{agent.short}</b></div>
       {model && <div className="flow-node-model" title="执行模型">{model}</div>}
+      {contract?.pair_stage && (
+        <div className="flow-node-pair" title={`配对验证：与「${contract.pair_stage_name ?? contract.pair_stage}」互为验证关系`}>⇄ {contract.pair_stage_name ?? contract.pair_stage}</div>
+      )}
       {topTools.length > 0 && (
         <div className={`flow-node-tools${running ? ' is-live' : ''}`} title={`共 ${total} 次工具调用`}>
           {topTools.map((entry) => <span className="flow-tool-chip" key={entry.tool}>{entry.tool}<i>×{entry.count}</i></span>)}

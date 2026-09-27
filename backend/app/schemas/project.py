@@ -60,6 +60,16 @@ class ToolUsageOut(BaseModel):
     count: int
 
 
+class StageContractOut(BaseModel):
+    """阶段契约摘要：输入/输出约束与配对验证关系。"""
+
+    inputs: list[str] | None = None
+    outputs: dict[str, int] = {}
+    pair_stage: str | None = None
+    pair_stage_name: str | None = None
+    note: str = ""
+
+
 class ProjectFlowStage(BaseModel):
     stage: StageOut
     status: str
@@ -72,6 +82,7 @@ class ProjectFlowStage(BaseModel):
     tool_usage: list[ToolUsageOut] = []
     tool_call_count: int = 0
     parallel_peers: list[str] = []
+    contract: StageContractOut | None = None
 
 
 class ProjectFlowOut(BaseModel):

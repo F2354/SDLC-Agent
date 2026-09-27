@@ -49,6 +49,7 @@ from app.services.traceability import (
     parse_entities,
     rebuild_traceability,
 )
+from app.services.stage_contracts import contract_context_text, stage_contract
 from app.services.process_graph import get_stage_dependencies, group_by_parallel_batch
 
 logger = logging.getLogger("uvicorn.error")
@@ -271,6 +272,7 @@ class AgentState(TypedDict):
     project_name: str
     project_description: str
     previous_artifacts: str
+    contract_text: str
     model_name: str
     output: str
     error_info: str
@@ -280,6 +282,45 @@ class AgentState(TypedDict):
     should_review: bool
     artifact_id: int
     traceability_summary: str
+
+
+def _previous_artifacts_text(
+    db: Session,
+    project: Project,
+    stage: Stage,
+    exclude_run_id: int | None = None,
+) -> str:
+    """按阶段契约裁剪前置产物上下文。
+
+    契约未声明 inputs 时保持旧行为（全量拼接）；声明了 inputs 时只纳入
+    指定阶段的产物（经 stage_run → stage 关联判断），若一个都匹配不到
+    则回退全量 —— 防御首轮缺产物的场景。
+    """
+    rows = list(
+        db.scalars(
+            select(Artifact)
+            .where(Artifact.project_id == project.id)
+            .order_by(Artifact.id)
+        )
+    )
+    if exclude_run_id is not None:
+        rows = [row for row in rows if row.stage_run_id != exclude_run_id]
+
+    contract = stage_contract(
+        project.process_model.code if project.process_model else None, stage.code
+    )
+    if contract.inputs is not None and rows:
+        allowed = set(contract.inputs)
+        filtered = [
+            row
+            for row in rows
+            if row.stage_run is not None
+            and row.stage_run.stage is not None
+            and row.stage_run.stage.code in allowed
+        ]
+        if filtered:
+            rows = filtered
+    return "\n\n".join(f"### {row.title}\n{row.content_md}" for row in rows)
 
 
 def _entity_gap(stage_code: str, text: str) -> str:
@@ -338,6 +379,7 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  #
             project_name=current["project_name"],
             project_description=current["project_description"],
             previous_artifacts=current["previous_artifacts"],
+            contract_text=current.get("contract_text", ""),
         )
         if current.get("error_info"):
             user += (
@@ -602,16 +644,7 @@ def execute_code_stage(
         {"stage_run_id": run.id, "agent_code": stage.code, "message": stage.name},
     )
 
-    previous_rows = list(
-        db.scalars(
-            select(Artifact)
-            .where(Artifact.project_id == project.id)
-            .order_by(Artifact.id)
-        )
-    )
-    previous_artifacts = "\n\n".join(
-        f"### {row.title}\n{row.content_md}" for row in previous_rows
-    )
+    previous_artifacts = _previous_artifacts_text(db, project, stage)
 
     max_attempts = 3 if stage.code == "coding" else 2
     error_info = ""
@@ -745,15 +778,9 @@ def execute_coding_harness_stage(
         },
     )
 
-    previous_rows = list(
-        db.scalars(
-            select(Artifact)
-            .where(Artifact.project_id == project.id)
-            .order_by(Artifact.id)
-        )
-    )
-    previous_artifacts = "\n\n".join(
-        f"### {row.title}\n{row.content_md}" for row in previous_rows
+    previous_artifacts = _previous_artifacts_text(db, project, stage)
+    contract = stage_contract(
+        project.process_model.code if project.process_model else None, stage.code
     )
 
     result = run_coding_harness(
@@ -766,6 +793,7 @@ def execute_coding_harness_stage(
         model_name=model_name,
         agent_code=agent_code,
         stage_run_id=run.id,
+        contract_text=contract_context_text(contract),
     )
     if result.tool_usage:
         run.tool_usage_json = json.dumps(result.tool_usage, ensure_ascii=False)
@@ -935,15 +963,10 @@ def execute_stage_run(stage_run_id: int) -> None:
                 },
             )
 
-            previous_rows = list(
-                db.scalars(
-                    select(Artifact)
-                    .where(Artifact.project_id == project.id)
-                    .order_by(Artifact.id)
-                )
-            )
-            previous_artifacts = "\n\n".join(
-                f"### {row.title}\n{row.content_md}" for row in previous_rows
+            previous_artifacts = _previous_artifacts_text(db, project, stage)
+            contract = stage_contract(
+                project.process_model.code if project.process_model else None,
+                stage.code,
             )
 
             state: AgentState = {
@@ -954,6 +977,7 @@ def execute_stage_run(stage_run_id: int) -> None:
                 "project_name": project.name,
                 "project_description": project.description,
                 "previous_artifacts": previous_artifacts,
+                "contract_text": contract_context_text(contract),
                 "model_name": model_name or provider.default_model,
                 "output": "",
                 "error_info": "",
@@ -1145,15 +1169,8 @@ def confirm_stage(run: StageRun, db: Session) -> StageRun:
         f"{'用户' if row.role == 'user' else 'Agent'}: {row.content}"
         for row in transcript_rows
     )
-    previous_rows = list(
-        db.scalars(
-            select(Artifact)
-            .where(Artifact.project_id == project.id, Artifact.stage_run_id != run.id)
-            .order_by(Artifact.id)
-        )
-    )
-    previous_artifacts = "\n\n".join(
-        f"### {row.title}\n{row.content_md}" for row in previous_rows
+    previous_artifacts = _previous_artifacts_text(
+        db, project, stage, exclude_run_id=run.id
     )
 
     system, user_prompt = build_confirm_prompt(

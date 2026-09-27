@@ -198,6 +198,7 @@ def build_stage_prompt(
     project_name: str,
     project_description: str,
     previous_artifacts: str,
+    contract_text: str = "",
 ) -> tuple[str, str]:
     role, instruction = STAGE_ROLE.get(
         stage_code, ("软件工程专家", "负责生成该阶段的专业工程文档。")
@@ -234,6 +235,8 @@ def build_stage_prompt(
             "例如用例小节内写「来源：RQ-001」，模块小节内写「实现：RQ-001、UC-001」，"
             "测试用例小节内写「验证：RQ-001、MOD-001」。"
         )
+    if contract_text:
+        user += "\n\n本阶段契约：\n" + contract_text
     return system, user
 
 

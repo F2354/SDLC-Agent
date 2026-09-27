@@ -110,6 +110,15 @@ export interface ToolUsage {
   count: number
 }
 
+/** 阶段契约：输入/输出约束与配对验证关系（过程模型行为差异的来源）。 */
+export interface StageContract {
+  inputs: string[] | null
+  outputs: Record<string, number>
+  pair_stage: string | null
+  pair_stage_name: string | null
+  note: string
+}
+
 export interface ProjectFlowStage {
   stage: Stage
   status: string
@@ -125,6 +134,7 @@ export interface ProjectFlowStage {
   tool_call_count: number
   /** 与该阶段并行的其它阶段编码。 */
   parallel_peers: string[]
+  contract: StageContract | null
 }
 
 export interface ProjectFlow {

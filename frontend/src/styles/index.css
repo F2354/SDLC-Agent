@@ -751,6 +751,7 @@ select:focus {
 .flow-agent-icon { display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; border-radius: 7px; color: #4f46e5; background: #eef2ff; font-size: 10px; font-weight: 800; }
 /* 过程模型节点上的 Agent 活动信息：执行模型、工具调用、并行通道 */
 .flow-node-model { overflow: hidden; margin-top: 6px; color: #94a3b8; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.flow-node-pair { overflow: hidden; margin-top: 3px; color: #6366f1; font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .flow-node-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
 .flow-tool-chip { display: inline-flex; align-items: center; gap: 3px; border: 1px solid #e2e8f0; border-radius: 6px; padding: 1px 5px; color: #475569; background: #f8fafc; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; }
 .flow-tool-chip i { color: #6366f1; font-style: normal; font-weight: 700; }
