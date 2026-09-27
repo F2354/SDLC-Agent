@@ -36,6 +36,7 @@ from app.services.prompts import (
 from app.services.code_service import (
     commit_project_changes,
     list_code_files,
+    read_code_file,
     run_stage_tests,
     run_verify,
     write_files,
@@ -740,6 +741,109 @@ def execute_code_stage(
     )
 
 
+def _paired_stage_entities(
+    db: Session, project: Project, pair_stage_code: str
+) -> dict[str, list[str]]:
+    """读取配对阶段最新产物中定义的实体编号，供测试用例映射参照。"""
+    row = db.scalar(
+        select(Artifact)
+        .join(StageRun, Artifact.stage_run_id == StageRun.id)
+        .join(Stage, StageRun.stage_id == Stage.id)
+        .where(Artifact.project_id == project.id, Stage.code == pair_stage_code)
+        .order_by(Artifact.id.desc())
+    )
+    if row is None:
+        return {}
+    return {k: v for k, v in parse_entities(row.content_md or "").items() if v}
+
+
+def _tests_dir_snapshot(project_id: int, max_chars: int = 5000) -> str:
+    """汇总 tests/ 下的测试源码，供生成用例映射时参照。"""
+    chunks: list[str] = []
+    used = 0
+    try:
+        tree = list_code_files(project_id, "tests")
+    except Exception:  # noqa: BLE001
+        return ""
+    for item in tree.files:
+        if used >= max_chars:
+            break
+        try:
+            content = read_code_file(project_id, item.path, "tests")
+        except Exception:  # noqa: BLE001
+            continue
+        piece = f"--- {item.path} ---\n{content}"
+        chunks.append(piece[: max_chars - used])
+        used += len(piece)
+    return "\n\n".join(chunks)
+
+
+def _test_case_mapping_md(
+    db: Session,
+    project: Project,
+    stage: Stage,
+    contract,  # StageContract
+    provider: LLMProvider,
+    model_name: str | None,
+) -> str:
+    """为工具循环产出的真实测试生成「TC 用例映射」章节。
+
+    工具循环阶段的产物是机器拼装的（文件清单 + 验证输出），天然不含
+    TC-xxx 实体，追溯链会在「模块→测试」一跳断掉。这里让 LLM 对照
+    配对设计阶段的实体编号，把已落盘的 pytest 测试映射为规范的
+    `### 测试用例 TC-xxx`（正文标注 `验证：MOD-xxx / RQ-xxx`），
+    使追溯覆盖率能真实反映三条验证通道的产出。
+    """
+    snapshot = _tests_dir_snapshot(project.id)
+    if not snapshot.strip():
+        return ""
+
+    paired = (
+        _paired_stage_entities(db, project, contract.pair_stage)
+        if contract.pair_stage
+        else {}
+    )
+    reference_lines = [
+        f"{label}：{'、'.join(keys)}"
+        for label, keys in (
+            ("模块编号 MOD", paired.get("MOD")),
+            ("需求编号 RQ", paired.get("RQ")),
+        )
+        if keys
+    ]
+    reference_text = "\n".join(reference_lines) or "（配对产物中未解析到实体编号）"
+
+    minimum = contract.outputs.get("TC", 2)
+    system = (
+        "你是测试工程师。你的任务是把已写好的 pytest 测试整理为规范的测试用例映射清单，"
+        "供自动追溯矩阵使用。只输出 Markdown 片段，不要输出任何解释。"
+    )
+    user = (
+        f"配对阶段可引用的实体编号：\n{reference_text}\n\n"
+        f"tests/ 目录下的测试源码：\n{snapshot}\n\n"
+        "请为每个测试函数生成一个条目，格式严格如下：\n\n"
+        "### 测试用例 TC-001\n"
+        "验证：MOD-001\n"
+        "覆盖 xxx 行为的说明（一两句）。\n\n"
+        f"要求：编号从 TC-001 连续递增，至少 {minimum} 条；"
+        "「验证：」必须引用上面列出的真实编号（不得编造）；"
+        "一条用例只验证一个关注点。"
+    )
+
+    for attempt in range(2):
+        content = _invoke_llm(
+            provider, system, user, max_tokens=1600, model_name=model_name
+        ).strip()
+        found = parse_entities(content).get("TC", [])
+        if len(found) >= minimum and "验证：" in content:
+            return content
+        user += (
+            f"\n\n上次输出不合格：TC 实体 {len(found)} 条（要求 ≥{minimum}）或缺少"
+            "「验证：」标注。请严格按格式重新输出完整清单。"
+        )
+    return ""
+
+
 def execute_coding_harness_stage(
     stage: Stage,
     project: Project,
@@ -822,6 +926,19 @@ def execute_coding_harness_stage(
         f"## 测试结果\n\n{tests_md}\n\n"
         f"最终状态：{'通过' if result.ok else '未完全通过'}，共 {result.turn_count} 轮。"
     )
+
+    # 契约要求产出 TC 实体的阶段（V 模型三条验证通道）：把已落盘的
+    # pytest 测试映射为规范的 TC-xxx 用例，接通「模块→测试」追溯跳。
+    if contract.outputs.get("TC"):
+        try:
+            mapping_md = _test_case_mapping_md(
+                db, project, stage, contract, provider, model_name
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("测试用例映射生成失败: stage=%s", stage.code)
+            mapping_md = ""
+        if mapping_md:
+            content_md += "\n\n## 测试用例映射\n\n" + mapping_md
 
     artifact = Artifact(
         project_id=project.id,
