@@ -143,6 +143,162 @@ type FlowNodeProps = ProcessFlowProps & {
   index: number
 }
 
+/* ============================================================
+   过程模型画布：布局表（坐标 + 边）→ SVG 连线 + HTML 节点卡片
+   每个模型一份布局定义，边绘制在真实坐标之间并永远精准连接；
+   V 模型是真正的 V 形，瀑布是阶梯，Scrum 是闭环圆环。
+   ============================================================ */
+
+type FlowPoint = { x: number; y: number }
+type FlowEdgeKind = 'flow' | 'pair' | 'feedback'
+type FlowEdgeDef = { from: string; to: string; kind: FlowEdgeKind; label?: string; bend?: number; labelDy?: number }
+type ModelLayout = {
+  positions: Record<string, FlowPoint>
+  edges: FlowEdgeDef[]
+  hub?: { x: number; y: number; kicker: string; title: string }
+  rings?: { cx: number; cy: number; rx: number; ry: number }[]
+}
+
+const MODEL_LAYOUTS: Record<string, ModelLayout> = {
+  'v-model': {
+    positions: {
+      requirements: { x: 11, y: 12 },
+      architecture: { x: 17, y: 40 },
+      'detailed-design': { x: 30, y: 66 },
+      coding: { x: 50, y: 89 },
+      'unit-test': { x: 70, y: 66 },
+      'integration-test': { x: 83, y: 40 },
+      'system-test': { x: 89, y: 12 },
+    },
+    edges: [
+      { from: 'requirements', to: 'architecture', kind: 'flow' },
+      { from: 'architecture', to: 'detailed-design', kind: 'flow' },
+      { from: 'detailed-design', to: 'coding', kind: 'flow' },
+      { from: 'coding', to: 'unit-test', kind: 'flow' },
+      { from: 'unit-test', to: 'integration-test', kind: 'flow' },
+      { from: 'integration-test', to: 'system-test', kind: 'flow' },
+      { from: 'detailed-design', to: 'unit-test', kind: 'pair', label: '模块验证' },
+      { from: 'architecture', to: 'integration-test', kind: 'pair', label: '集成验证' },
+      { from: 'requirements', to: 'system-test', kind: 'pair', label: '验收追溯' },
+    ],
+  },
+  waterfall: {
+    positions: {
+      requirements: { x: 10, y: 12 },
+      architecture: { x: 29, y: 30 },
+      'detailed-design': { x: 48, y: 48 },
+      coding: { x: 67, y: 66 },
+      testing: { x: 87, y: 84 },
+    },
+    edges: [
+      { from: 'requirements', to: 'architecture', kind: 'flow' },
+      { from: 'architecture', to: 'detailed-design', kind: 'flow' },
+      { from: 'detailed-design', to: 'coding', kind: 'flow' },
+      { from: 'coding', to: 'testing', kind: 'flow' },
+      { from: 'testing', to: 'requirements', kind: 'feedback', label: '评审回溯 · 打回即沿通道返回修订', bend: 26 },
+    ],
+  },
+  iterative: {
+    positions: {
+      requirements: { x: 9, y: 16 },
+      architecture: { x: 27, y: 16 },
+      'detailed-design': { x: 45, y: 16 },
+      coding: { x: 63, y: 16 },
+      testing: { x: 81, y: 16 },
+      'iteration-review': { x: 45, y: 72 },
+    },
+    edges: [
+      { from: 'requirements', to: 'architecture', kind: 'flow' },
+      { from: 'architecture', to: 'detailed-design', kind: 'flow' },
+      { from: 'detailed-design', to: 'coding', kind: 'flow' },
+      { from: 'coding', to: 'testing', kind: 'flow' },
+      { from: 'testing', to: 'iteration-review', kind: 'flow', bend: 10 },
+      { from: 'iteration-review', to: 'requirements', kind: 'feedback', label: '评审产出下一轮改进需求（RQ-xxx）', bend: 22 },
+    ],
+  },
+  spiral: {
+    positions: {
+      requirements: { x: 11, y: 24 },
+      'risk-analysis': { x: 34, y: 10 },
+      architecture: { x: 59, y: 12 },
+      coding: { x: 82, y: 28 },
+      testing: { x: 79, y: 58 },
+      evaluation: { x: 49, y: 78 },
+    },
+    edges: [
+      { from: 'requirements', to: 'risk-analysis', kind: 'flow' },
+      { from: 'risk-analysis', to: 'architecture', kind: 'flow' },
+      { from: 'architecture', to: 'coding', kind: 'flow' },
+      { from: 'coding', to: 'testing', kind: 'flow' },
+      { from: 'testing', to: 'evaluation', kind: 'flow' },
+      { from: 'evaluation', to: 'requirements', kind: 'feedback', label: '进入下一轮螺旋 / 交付', bend: -24 },
+    ],
+    hub: { x: 48, y: 44, kicker: 'RISK', title: '风险驱动' },
+    rings: [
+      { cx: 48, cy: 44, rx: 27, ry: 31 },
+      { cx: 48, cy: 44, rx: 15, ry: 17 },
+    ],
+  },
+  prototype: {
+    positions: {
+      requirements: { x: 9, y: 18 },
+      prototype: { x: 30, y: 18 },
+      'user-feedback': { x: 52, y: 18 },
+      refinement: { x: 75, y: 18 },
+      coding: { x: 44, y: 72 },
+      testing: { x: 76, y: 72 },
+    },
+    edges: [
+      { from: 'requirements', to: 'prototype', kind: 'flow' },
+      { from: 'prototype', to: 'user-feedback', kind: 'flow' },
+      { from: 'user-feedback', to: 'refinement', kind: 'flow' },
+      { from: 'refinement', to: 'coding', kind: 'flow', bend: -12 },
+      { from: 'coding', to: 'testing', kind: 'flow' },
+      { from: 'user-feedback', to: 'prototype', kind: 'feedback', label: '原型修订', bend: -12, labelDy: 11 },
+    ],
+  },
+  scrum: {
+    positions: {
+      backlog: { x: 50, y: 8 },
+      'sprint-planning': { x: 87, y: 34 },
+      'sprint-dev': { x: 69, y: 84 },
+      'sprint-review': { x: 31, y: 84 },
+      'sprint-retrospective': { x: 13, y: 34 },
+    },
+    edges: [
+      { from: 'backlog', to: 'sprint-planning', kind: 'flow' },
+      { from: 'sprint-planning', to: 'sprint-dev', kind: 'flow' },
+      { from: 'sprint-dev', to: 'sprint-review', kind: 'flow' },
+      { from: 'sprint-review', to: 'sprint-retrospective', kind: 'flow' },
+      { from: 'sprint-retrospective', to: 'backlog', kind: 'feedback', label: '回顾回流待办', bend: 20 },
+    ],
+    hub: { x: 50, y: 48, kicker: 'SPRINT', title: '迭代闭环' },
+  },
+}
+
+/** 二次贝塞尔：bend 为沿法向的弯曲量（画布坐标系单位）。 */
+function edgePath(a: FlowPoint, b: FlowPoint, bend = 0): { d: string; mid: FlowPoint } {
+  const mx = (a.x + b.x) / 2
+  const my = (a.y + b.y) / 2
+  if (!bend) return { d: `M ${a.x} ${a.y} L ${b.x} ${b.y}`, mid: { x: mx, y: my } }
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len = Math.hypot(dx, dy) || 1
+  const cx = mx + (-dy / len) * bend
+  const cy = my + (dx / len) * bend
+  return { d: `M ${a.x} ${a.y} Q ${cx} ${cy} ${b.x} ${b.y}`, mid: { x: (mx + cx) / 2, y: (my + cy) / 2 } }
+}
+
+/** 把边的端点沿各轴回缩，避免线条/箭头钻进节点卡片下方。 */
+function trim(a: FlowPoint, b: FlowPoint, rx = 10, ry = 8.5): FlowPoint {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  return {
+    x: b.x - Math.sign(dx) * Math.min(Math.abs(dx) / 2, rx),
+    y: b.y - Math.sign(dy) * Math.min(Math.abs(dy) / 2, ry),
+  }
+}
+
 function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart, liveTools }: ProcessFlowProps) {
   const model = flow.process_model.code
   const stages = flow.stages
@@ -162,12 +318,12 @@ function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart, liveT
   )
 
   const modelDescription: Record<string, string> = {
-    waterfall: '主流程逐段交付，评审打回时沿回溯通道返回上一阶段修订。',
-    'v-model': '左侧定义与实现、右侧验证与测试通过映射关系持续追溯。',
-    iterative: '每轮开发都经过测试和评审，反馈会回到下一轮需求。',
-    spiral: '以风险为中心展开多轮螺旋，每轮都经过评估再决定下一步。',
-    prototype: '原型验证收集用户反馈，反馈会回流到需求精化和下一版原型。',
-    scrum: 'Sprint 评审与回顾将结果反馈回产品待办，形成持续迭代闭环。',
+    waterfall: '阶梯式推进：每一步只依据上一步的产物，评审打回沿回溯通道返回。',
+    'v-model': '真正的 V 形：左臂定义与实现逐层下行，右臂验证逐层上行，横线即配对验证。',
+    iterative: '本轮五个阶段线性交付，迭代评审产出下一轮的改进需求。',
+    spiral: '围绕风险核心展开：每轮经过风险分析 → 设计 → 实现 → 验证 → 评估。',
+    prototype: '原型收集反馈，反馈精化需求，编码只读精化后的需求。',
+    scrum: 'Sprint 闭环：待办 → 计划 → 开发 → 评审 → 回顾，回到待办。',
   }
 
   const heading = (
@@ -177,142 +333,99 @@ function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart, liveT
     </div>
   )
 
-  if (model === 'v-model') {
-    const leftCodes = new Set(['requirements', 'architecture', 'detailed-design'])
-    const left = stages.filter(({ stage }) => leftCodes.has(stage.code))
-    const coding = stages.find(({ stage }) => stage.code === 'coding')
-    const right = stages.filter(({ stage }) => CODE_STAGES.has(stage.code) && stage.code !== 'coding')
-    const pairs = [
-      { left: left.find(({ stage }) => stage.code === 'requirements'), right: right.find(({ stage }) => stage.code === 'system-test'), label: '验收追溯' },
-      { left: left.find(({ stage }) => stage.code === 'architecture'), right: right.find(({ stage }) => stage.code === 'integration-test'), label: '集成验证' },
-      { left: left.find(({ stage }) => stage.code === 'detailed-design'), right: right.find(({ stage }) => stage.code === 'unit-test'), label: '模块验证' },
-    ].filter((pair): pair is { left: ProjectFlow['stages'][number]; right: ProjectFlow['stages'][number]; label: string } => Boolean(pair.left && pair.right))
-    // 配对线激活：任一端在生成中，对应 V 线高亮加速，直观呈现"验证正在对照设计"。
-    const isBusy = (item?: ProjectFlow['stages'][number]) =>
-      !!item && (item.status === 'generating' || item.status === 'collecting')
-    const pairPaths = [
-      { d: 'M 25 16 L 50 84 L 75 16', cls: '' },
-      { d: 'M 25 40 L 50 84 L 75 40', cls: 'flow-line-strong' },
-      { d: 'M 25 64 L 50 84 L 75 64', cls: 'flow-line-soft' },
-    ]
-    // pairs 顺序与路径一一对应：requirements↔system-test、architecture↔integration-test、detailed-design↔unit-test
-    const pairActive = [isBusy(pairs[0]?.left) || isBusy(pairs[0]?.right), isBusy(pairs[1]?.left) || isBusy(pairs[1]?.right), isBusy(pairs[2]?.left) || isBusy(pairs[2]?.right)]
+  const layout = MODEL_LAYOUTS[model]
+  if (layout) {
+    const statusByCode = new Map(stages.map((s) => [s.stage.code, s.status]))
+    const isBusy = (code: string) => {
+      const s = statusByCode.get(code)
+      return s === 'generating' || s === 'collecting'
+    }
+    const edges = layout.edges
+      .map((e) => {
+        const a = layout.positions[e.from]
+        const b = layout.positions[e.to]
+        if (!a || !b) return null
+        const trimmed = { ...e, from: trim(a, b), to: trim(b, a) }
+        const { d, mid } = edgePath(trimmed.from, trimmed.to, e.bend ?? 0)
+        return { ...e, a, b, d, mid, active: isBusy(e.from) || isBusy(e.to) }
+      })
+      .filter((e): e is NonNullable<typeof e> => Boolean(e))
+    const placed = stages.filter((s) => layout.positions[s.stage.code])
+    const overflow = stages.filter((s) => !layout.positions[s.stage.code])
+    const hasPair = edges.some((e) => e.kind === 'pair')
 
     return (
-      <div className="process-flow process-flow-v-model">
+      <div className="process-flow process-flow-canvas">
         {heading}
-        <div className="v-model-map">
-          <div className="v-model-column v-model-left">
-            <div className="flow-column-label">定义 / 实现</div>
-            {pairs.map((pair) => renderNode(pair.left, stages.indexOf(pair.left), 'v-branch-node'))}
-          </div>
-          <div className="v-model-center">
-            <div className="flow-column-label">汇合点</div>
-            {coding ? renderNode(coding, stages.indexOf(coding), 'v-coding-node') : null}
-            <div className="v-center-caption">代码是开发与验证的汇合点</div>
-          </div>
-          <div className="v-model-column v-model-right">
-            <div className="flow-column-label">验证 / 测试</div>
-            {pairs.map((pair) => (
-              <div className="v-test-pair" key={pair.right.stage.code}>
-                {renderNode(pair.right, stages.indexOf(pair.right), 'v-branch-node')}
-                <span className="v-pair-label">{pair.label}</span>
+        <div className="flow-canvas-scroll">
+          <div className="flow-canvas">
+            <svg className="flow-edges" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <marker id="edge-arrow-feedback" markerUnits="userSpaceOnUse" markerWidth="3.4" markerHeight="3.4" refX="2.7" refY="1.7" orient="auto">
+                  <path d="M 0 0 L 3 1.7 L 0 3.4 z" fill="#f59e0b" />
+                </marker>
+              </defs>
+              {layout.rings?.map((r) => (
+                <ellipse
+                  key={`${r.cx}-${r.rx}`}
+                  className="flow-ring"
+                  cx={r.cx}
+                  cy={r.cy}
+                  rx={r.rx}
+                  ry={r.ry}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+              {edges.map((e) => (
+                <path
+                  key={`${e.from}->${e.to}`}
+                  d={e.d}
+                  className={[
+                    'flow-edge',
+                    `flow-edge-${e.kind}`,
+                    e.active ? 'flow-edge-active' : '',
+                  ].join(' ')}
+                  markerEnd={e.kind === 'feedback' ? 'url(#edge-arrow-feedback)' : undefined}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ))}
+            </svg>
+            {layout.hub && (
+              <div className="flow-hub" style={{ left: `${layout.hub.x}%`, top: `${layout.hub.y}%` }}>
+                <span>{layout.hub.kicker}</span>
+                <b>{layout.hub.title}</b>
               </div>
-            ))}
-          </div>
-          <svg className="v-branch-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-            {pairPaths.map((path, i) => (
-              <path
-                key={path.d}
-                className={`flow-line ${path.cls}${pairActive[i] ? ' flow-line-active' : ''}`}
-                d={path.d}
-              />
-            ))}
-          </svg>
-        </div>
-        <div className="flow-legend"><span><i className="legend-dot legend-main" />开发主线</span><span><i className="legend-dot legend-test" />测试对应</span><span><i className="legend-dot legend-back" />结果可回溯</span></div>
-      </div>
-    )
-  }
-
-  if (model === 'waterfall') {
-    return (
-      <div className="process-flow process-flow-waterfall">
-        {heading}
-        <div className="waterfall-map">
-          <div className="waterfall-mainline" aria-hidden="true" />
-          <div className="waterfall-track">
-            {stages.map((item, index) => (
-              <div className="waterfall-step" key={item.stage.code}>
-                {renderNode(item, index)}
-                {index < stages.length - 1 && <span className="flow-arrow flow-arrow-down">↓</span>}
-              </div>
-            ))}
-          </div>
-          <div className="waterfall-feedback">
-            <span className="feedback-kicker">REVIEW LOOP</span>
-            <span className="feedback-arrow">↶</span>
-            <p>任一阶段评审打回后，沿回溯通道返回对应阶段修订，不会丢失后续验证上下文。</p>
+            )}
+            {edges
+              .filter((e) => e.label)
+              .map((e) => (
+                <span
+                  key={`label-${e.from}-${e.to}`}
+                  className={`flow-edge-label flow-edge-label-${e.kind}${e.active ? ' is-active' : ''}`}
+                  style={{ left: `${e.mid.x}%`, top: `${e.mid.y + (e.labelDy ?? 0)}%` }}
+                >
+                  {e.label}
+                </span>
+              ))}
+            {placed.map((item) => {
+              const p = layout.positions[item.stage.code]
+              return (
+                <div key={item.stage.code} className="flow-canvas-node" style={{ left: `${p.x}%`, top: `${p.y}%` }}>
+                  {renderNode(item, stages.indexOf(item))}
+                </div>
+              )
+            })}
           </div>
         </div>
-        <div className="flow-legend"><span><i className="legend-dot legend-main" />阶段推进</span><span><i className="legend-dot legend-back" />评审回溯 / 重生成</span></div>
-      </div>
-    )
-  }
-
-  if (model === 'iterative') {
-    return (
-      <div className="process-flow process-flow-iterative">
-        {heading}
-        <div className="iteration-map">
-          <div className="iteration-main-row">{stages.map((item, index) => renderNode(item, index, 'iteration-node'))}</div>
-          <div className="iteration-loop-line"><span>迭代评审</span><b>↺</b><span>反馈进入下一轮需求</span></div>
-          <div className="iteration-feedback-arrow">↑</div>
+        <div className="flow-legend">
+          <span><i className="legend-dot legend-main" />阶段推进</span>
+          {hasPair && <span><i className="legend-dot legend-test" />配对验证</span>}
+          <span><i className="legend-dot legend-back" />回溯 / 反馈</span>
+          {model === 'spiral' && <span><i className="legend-dot legend-risk" />风险核心</span>}
         </div>
-        <div className="flow-legend"><span><i className="legend-dot legend-main" />本轮交付</span><span><i className="legend-dot legend-back" />下一轮回溯</span></div>
-      </div>
-    )
-  }
-
-  if (model === 'spiral') {
-    return (
-      <div className="process-flow process-flow-spiral">
-        {heading}
-        <div className="spiral-map">
-          <div className="spiral-orbit spiral-orbit-outer" />
-          <div className="spiral-orbit spiral-orbit-inner" />
-          <div className="spiral-center"><span>RISK</span><b>风险<br />评估</b></div>
-          <div className="spiral-nodes">{stages.map((item, index) => renderNode(item, index, item.stage.code === 'risk-analysis' ? 'spiral-risk-node' : ''))}</div>
-          <div className="spiral-caption">每轮完成风险分析 → 设计 → 实现 → 验证 → 阶段评估，再决定是否进入下一轮。</div>
-        </div>
-        <div className="flow-legend"><span><i className="legend-dot legend-risk" />风险驱动</span><span><i className="legend-dot legend-back" />阶段评估回溯</span></div>
-      </div>
-    )
-  }
-
-  if (model === 'prototype') {
-    return (
-      <div className="process-flow process-flow-prototype">
-        {heading}
-        <div className="prototype-map">
-          <div className="prototype-mainline">{stages.map((item, index) => renderNode(item, index, 'prototype-node'))}</div>
-          <div className="prototype-feedback-path"><span>用户反馈</span><b>↺</b><span>需求精化 / 原型修订</span></div>
-          <div className="prototype-feedback-line" aria-hidden="true" />
-        </div>
-        <div className="flow-legend"><span><i className="legend-dot legend-main" />构建主线</span><span><i className="legend-dot legend-back" />用户反馈回流</span></div>
-      </div>
-    )
-  }
-
-  if (model === 'scrum') {
-    return (
-      <div className="process-flow process-flow-scrum">
-        {heading}
-        <div className="scrum-map">
-          <div className="scrum-track">{stages.map((item, index) => <div className="scrum-step" key={item.stage.code}>{renderNode(item, index, 'scrum-node')}{index < stages.length - 1 && <span className="scrum-arrow">→</span>}</div>)}</div>
-          <div className="scrum-feedback"><span>Sprint 回顾 / 评审</span><b>↶</b><span>返回产品待办</span></div>
-        </div>
-        <div className="flow-legend"><span><i className="legend-dot legend-main" />Sprint 主线</span><span><i className="legend-dot legend-back" />持续反馈</span></div>
+        {overflow.length > 0 && (
+          <div className="flow-generic-track">{overflow.map((item) => renderNode(item, stages.indexOf(item)))}</div>
+        )}
       </div>
     )
   }

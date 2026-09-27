@@ -801,83 +801,66 @@ select:focus {
 /* 无障碍：用户偏好减少动效时，关闭全部装饰性动画（保留状态可见性） */
 @media (prefers-reduced-motion: reduce) {
   .flow-node, .flow-node.is-approved, .flow-node.is-review, .flow-node.is-error,
-  .flow-node.is-active, .flow-node.is-active::before, .flow-node-tools.is-live .flow-tool-chip,
-  .parallel-pulse::after, .live-dot, .spiral-risk-node,
-  .flow-line, .spiral-orbit, .flow-arrow-down, .feedback-arrow,
-  .iteration-loop-line b, .prototype-feedback-path b, .scrum-feedback b, .scrum-arrow {
+  .flow-node.is-active, .flow-node.is-active::before, .flow-node.is-active .flow-node-pair,
+  .flow-node-tools.is-live .flow-tool-chip, .parallel-pulse::after, .live-dot,
+  .flow-edge, .flow-ring, .flow-hub {
     animation: none !important;
   }
 }
 
-.waterfall-map { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 0.72fr); gap: 52px; align-items: center; min-height: 700px; }
-.waterfall-track { position: relative; z-index: 2; display: flex; align-items: center; flex-direction: column; }
-.waterfall-mainline { position: absolute; z-index: 1; left: calc(50% - 26px); top: 42px; bottom: 42px; border-left: 2px dashed #c7d2fe; animation: flow-line-move 2.8s linear infinite; }
-.waterfall-step { display: flex; align-items: center; flex-direction: column; }
-.flow-arrow { display: block; color: #a5b4fc; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 22px; line-height: 1; }
-.flow-arrow-down { height: 34px; padding-top: 7px; animation: flow-arrow-down 1.5s ease-in-out infinite; }
-@keyframes flow-arrow-down { 0%, 100% { opacity: 0.35; transform: translateY(-2px); } 50% { opacity: 1; transform: translateY(3px); } }
-.waterfall-feedback { align-self: center; border-top: 1px dashed #f59e0b; border-bottom: 1px dashed #f59e0b; padding: 22px 0 22px 58px; color: #92400e; background: linear-gradient(90deg, rgba(255, 251, 235, 0.1), rgba(255, 251, 235, 0.76)); }
-.feedback-kicker { display: block; color: #d97706; font-size: 10px; font-weight: 800; letter-spacing: .14em; }
-.feedback-arrow { display: block; margin: 10px 0 3px; color: #f59e0b; font-size: 32px; animation: feedback-pulse 1.8s ease-in-out infinite; }
-.waterfall-feedback p { max-width: 210px; margin: 0; font-size: 11px; line-height: 1.7; }
-@keyframes feedback-pulse { 0%, 100% { opacity: .45; transform: translateX(0); } 50% { opacity: 1; transform: translateX(-5px); } }
+/* ===== 过程模型画布：布局表驱动（SVG 边 + HTML 节点卡片） ===== */
+.flow-canvas-scroll { overflow-x: auto; }
+.flow-canvas {
+  position: relative;
+  width: 100%;
+  min-width: 940px;
+  aspect-ratio: 8 / 5;
+  border: 1px solid #e7ecf5;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle, rgba(99, 102, 241, 0.09) 1px, transparent 1.3px) 0 0 / 26px 26px,
+    linear-gradient(180deg, rgba(252, 253, 255, 0.9), rgba(248, 250, 254, 0.75));
+}
+.flow-edges { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; }
 
-.v-model-map { position: relative; display: grid; grid-template-columns: 1fr 220px 1fr; gap: 22px; min-height: 570px; align-items: center; }
-.v-model-column, .v-model-center { position: relative; z-index: 2; display: flex; align-items: center; flex-direction: column; gap: 36px; }
-.v-model-left, .v-model-right { padding-top: 20px; }
-.v-model-center { justify-content: center; gap: 14px; }
-.v-model-center .flow-node { width: 210px; }
-.flow-column-label { color: #94a3b8; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-.v-branch-node { width: min(100%, 205px); }
-.v-test-pair { position: relative; display: flex; align-items: center; }
-.v-pair-label { position: absolute; left: -68px; width: 58px; color: #a5b4fc; font-size: 9px; line-height: 1.3; text-align: right; }
-.v-center-caption { max-width: 150px; color: #94a3b8; font-size: 10px; line-height: 1.5; text-align: center; }
-.v-branch-lines { position: absolute; z-index: 1; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.flow-line { fill: none; stroke: #c7d2fe; stroke-width: .75; stroke-dasharray: 2.2 2.2; animation: flow-line-move 2.8s linear infinite; transition: stroke 300ms ease, stroke-width 300ms ease, opacity 300ms ease; }
-.flow-line-strong { stroke: #a5b4fc; }.flow-line-soft { opacity: .62; }
-@keyframes flow-line-move { to { stroke-dashoffset: -13; } }
-/* 配对线激活：任一端运行中时高亮、加速、发光 —— "验证正在对照设计" */
-.flow-line-active { stroke: #4f46e5; stroke-width: 1.1; opacity: 1; stroke-dasharray: 3 2; animation: flow-line-move 0.9s linear infinite; filter: drop-shadow(0 0 3px rgba(79, 70, 229, 0.55)); }
+/* 边：主线流动、配对虚线、反馈回流 */
+.flow-edge { fill: none; stroke-linecap: round; }
+.flow-edge-flow { stroke: #a5b4fc; stroke-width: 1.7; stroke-dasharray: 5 5; animation: edge-flow 1.7s linear infinite; }
+.flow-edge-pair { stroke: #818cf8; stroke-width: 1.4; stroke-dasharray: 2 4; opacity: 0.55; animation: edge-flow 2.6s linear infinite; }
+.flow-edge-feedback { stroke: #f59e0b; stroke-width: 1.7; stroke-dasharray: 6 5; opacity: 0.85; animation: edge-flow 1.9s linear infinite; }
+@keyframes edge-flow { to { stroke-dashoffset: -20; } }
+/* 激活：任一端运行中 —— 高亮、加速、发光 */
+.flow-edge-active { stroke: #4f46e5; stroke-width: 2.3; opacity: 1; animation-duration: 0.7s; filter: drop-shadow(0 0 4px rgba(79, 70, 229, 0.5)); }
+
+/* 螺旋轨道环 */
+.flow-ring { fill: none; stroke: rgba(245, 158, 11, 0.45); stroke-dasharray: 4 7; animation: ring-breathe 4s ease-in-out infinite; }
+@keyframes ring-breathe { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.95; } }
+
+/* 中心枢纽（螺旋 RISK / Scrum SPRINT） */
+.flow-hub { position: absolute; z-index: 2; display: grid; place-content: center; gap: 2px; width: 86px; height: 86px; border: 1px solid rgba(99, 102, 241, 0.5); border-radius: 999px; color: #3730a3; background: rgba(238, 242, 255, 0.92); text-align: center; transform: translate(-50%, -50%); box-shadow: 0 0 0 9px rgba(99, 102, 241, 0.06), 0 10px 24px -14px rgba(79, 70, 229, 0.5); animation: hub-breathe 3.4s ease-in-out infinite; }
+.flow-hub span { color: #6366f1; font-size: 8px; font-weight: 800; letter-spacing: 0.16em; }
+.flow-hub b { font-size: 11px; }
+@keyframes hub-breathe { 0%, 100% { box-shadow: 0 0 0 9px rgba(99, 102, 241, 0.06), 0 10px 24px -14px rgba(79, 70, 229, 0.5); } 50% { box-shadow: 0 0 0 13px rgba(99, 102, 241, 0.1), 0 10px 24px -14px rgba(79, 70, 229, 0.5); } }
+
+/* 边标签（HTML，避免 SVG 非均匀缩放导致文字变形） */
+.flow-edge-label { position: absolute; z-index: 2; display: inline-block; white-space: nowrap; border: 1px solid #e0e7ff; border-radius: 999px; padding: 2px 9px; color: #6366f1; background: rgba(255, 255, 255, 0.94); font-size: 9px; font-weight: 700; transform: translate(-50%, -50%); }
+.flow-edge-label-feedback { color: #b45309; border-color: #fde68a; background: rgba(255, 251, 235, 0.95); }
+.flow-edge-label.is-active { border-color: #a5b4fc; box-shadow: 0 0 12px rgba(99, 102, 241, 0.3); }
+
+/* 画布节点：外层负责定位（translate 居中），内层卡片负责动画，避免 transform 冲突 */
+.flow-canvas-node { position: absolute; z-index: 3; transform: translate(-50%, -50%); }
+.flow-canvas-node .flow-node { width: 176px; min-height: 0; box-shadow: 0 6px 18px -10px rgba(23, 32, 51, 0.18); }
+.flow-canvas-node .flow-node.is-active { box-shadow: 0 14px 30px -14px rgba(79, 70, 229, 0.55); }
+
 .flow-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 20px; color: #94a3b8; font-size: 10px; }
 .flow-legend span { display: inline-flex; align-items: center; gap: 5px; }.legend-dot { display: inline-block; width: 7px; height: 7px; border-radius: 999px; }
 .legend-main { background: #6366f1; }.legend-test { background: #0ea5e9; }.legend-back { background: #f59e0b; }.legend-risk { background: #ef4444; }
 
-.iteration-map, .prototype-map, .scrum-map { position: relative; min-height: 300px; padding: 22px 12px 10px; }
-.iteration-main-row, .prototype-mainline { position: relative; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 8px; }
-.iteration-node, .prototype-node { flex: 1; width: auto; max-width: 220px; }
-.iteration-main-row::after, .prototype-mainline::after { position: absolute; z-index: -1; left: 9%; right: 9%; top: 56px; border-top: 1px dashed #c7d2fe; content: ''; }
-.iteration-loop-line, .prototype-feedback-path { position: absolute; z-index: 1; left: 18%; right: 18%; bottom: 30px; display: flex; align-items: center; justify-content: center; gap: 16px; border-top: 1px dashed #f59e0b; padding-top: 13px; color: #b45309; font-size: 10px; }
-.iteration-loop-line b, .prototype-feedback-path b { color: #f59e0b; font-size: 24px; animation: return-spin 2.6s linear infinite; }
-.iteration-feedback-arrow { position: absolute; right: 13%; bottom: 28px; color: #f59e0b; font-size: 25px; }
-@keyframes return-spin { to { transform: rotate(-360deg); } }
-
-.spiral-map { position: relative; min-height: 500px; overflow: hidden; background: repeating-radial-gradient(circle at 50% 50%, rgba(255, 251, 235, .42) 0 70px, rgba(255, 255, 255, .18) 70px 140px); }
-.spiral-orbit { position: absolute; left: 50%; top: 50%; border: 1px dashed #fcd34d; border-radius: 50%; transform: translate(-50%, -50%); animation: orbit-spin 26s linear infinite, orbit-pulse 4s ease-in-out infinite; }
-.spiral-orbit-outer { width: 80%; height: 86%; }.spiral-orbit-inner { width: 46%; height: 52%; border-color: #f59e0b; animation-delay: -1.4s, -9s; }
-@keyframes orbit-spin { to { transform: translate(-50%, -50%) rotate(360deg); } }
-@keyframes orbit-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
-/* 风险节点心跳：螺旋模型的风险是门禁，让它看起来"活着" */
-.spiral-risk-node { animation: risk-heartbeat 2.4s ease-in-out infinite; }
-@keyframes risk-heartbeat { 0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); } 50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.16); } }
-.spiral-center { position: absolute; z-index: 3; left: 50%; top: 50%; width: 90px; height: 90px; display: grid; place-items: center; border: 1px solid #f59e0b; border-radius: 50%; color: #92400e; background: #fffbeb; transform: translate(-50%, -50%); text-align: center; }
-.spiral-center span { font-size: 9px; font-weight: 800; letter-spacing: .14em; }.spiral-center b { font-size: 12px; line-height: 1.25; }
-.spiral-nodes { position: relative; z-index: 4; display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; align-items: center; padding: 28px 22px; }
-.spiral-nodes .flow-node { width: 100%; }.spiral-risk-node { border-color: #f59e0b; background: #fffbeb; }
-.spiral-caption { position: absolute; left: 50%; bottom: 14px; width: min(100% - 40px, 620px); color: #a16207; font-size: 10px; line-height: 1.5; text-align: center; transform: translateX(-50%); }
-
-.scrum-map { min-height: 260px; padding-bottom: 90px; background: linear-gradient(180deg, rgba(236, 253, 245, .56), transparent); }
-.scrum-track { position: relative; z-index: 2; display: flex; align-items: center; gap: 10px; justify-content: center; }
-.scrum-step { display: flex; align-items: center; gap: 10px; }.scrum-node { width: 155px; min-height: 132px; }.scrum-arrow { color: #34d399; font-size: 22px; animation: scrum-flow 1.6s ease-in-out infinite; }
-@keyframes scrum-flow { 0%, 100% { opacity: .4; transform: translateX(-2px); } 50% { opacity: 1; transform: translateX(3px); } }
-.scrum-feedback { position: absolute; left: 18%; right: 18%; bottom: 25px; display: flex; align-items: center; justify-content: center; gap: 15px; border-top: 1px dashed #34d399; padding-top: 12px; color: #047857; font-size: 10px; }.scrum-feedback b { font-size: 24px; animation: return-spin 2.6s linear infinite; }
 .flow-generic-track { display: flex; flex-wrap: wrap; gap: 16px; }
 
 @media (max-width: 960px) {
   .flow-model-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
-  .waterfall-map { grid-template-columns: 1fr; }.waterfall-feedback { padding-left: 0; }.v-model-map { grid-template-columns: 1fr; gap: 24px; }.v-branch-lines { display: none; }
-  .iteration-main-row, .prototype-mainline { align-items: stretch; flex-direction: column; }.iteration-main-row::after, .prototype-mainline::after { display: none; }.iteration-loop-line, .prototype-feedback-path { position: relative; left: auto; right: auto; bottom: auto; margin-top: 20px; }
-  .scrum-map { overflow-x: auto; }.scrum-track { min-width: 930px; justify-content: flex-start; }
-  .spiral-nodes { grid-template-columns: repeat(2, 1fr); }.spiral-map { min-height: 670px; }
+  .flow-canvas { min-width: 860px; }
 }
 
 
