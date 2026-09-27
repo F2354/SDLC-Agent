@@ -25,10 +25,13 @@ ENTITY_PATTERNS = {
     "UC": re.compile(r"\bUC[-_]?(\d+)\b", re.IGNORECASE),
     "MOD": re.compile(r"\bMOD[-_]?(\d+)\b", re.IGNORECASE),
     "TC": re.compile(r"\bTC[-_]?(\d+)\b", re.IGNORECASE),
+    # 风险条目：螺旋模型专有。风险不参与覆盖率计算，但参与解析、
+    # 未定义引用检查，以及 RSK→MOD 的缓解关系。
+    "RSK": re.compile(r"\bRSK[-_]?(\d+)\b", re.IGNORECASE),
 }
 
-# 实体的自然流转顺序：需求 → 用例 → 模块 → 测试用例。
-ENTITY_ORDER = ["RQ", "UC", "MOD", "TC"]
+# 实体的自然流转顺序：需求 → 用例 → 模块 → 测试用例（风险独立于该链）。
+ENTITY_ORDER = ["RQ", "UC", "MOD", "TC", "RSK"]
 
 # 有序类型对 → 关系名。
 _RELATIONS = {
@@ -38,6 +41,8 @@ _RELATIONS = {
     ("RQ", "TC"): "verifies",
     ("UC", "TC"): "verifies",
     ("MOD", "TC"): "verifies",
+    # 螺旋模型：设计决策回应风险（架构产物中同时出现 RSK 与 MOD 时建立）。
+    ("RSK", "MOD"): "mitigates",
 }
 
 # 单个小节内允许生成的最大关联数，避免异常文档导致组合爆炸。

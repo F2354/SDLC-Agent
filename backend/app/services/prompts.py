@@ -1,7 +1,7 @@
 from app.services.traceability import STAGE_ENTITY_REQUIREMENTS
 
 # 实体类型的中文名，用于提示词与校验信息。
-ENTITY_LABELS = {"RQ": "需求条目", "UC": "用例", "MOD": "模块", "TC": "测试用例"}
+ENTITY_LABELS = {"RQ": "需求条目", "UC": "用例", "MOD": "模块", "TC": "测试用例", "RSK": "风险"}
 
 
 def entity_requirement_text(stage_code: str) -> str:

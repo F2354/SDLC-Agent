@@ -137,9 +137,97 @@ _V_MODEL_CONTRACTS: dict[str, StageContract] = {
     ),
 }
 
-# 其余模型的专属差异（当前从简，未列出的回落通用契约）。
+# 各模型的专属契约：让 6 种过程模型产生真实的、可测量的行为差异。
+#
+# 瀑布 —— 严格串行基线：每阶段只依据紧邻前驱工作（与 V 模型的
+#         「验证读配对设计」形成对照组）；
+# 迭代 —— 迭代评审是下一轮的需求来源；
+# 螺旋 —— 风险是一等实体（RSK），设计必须回应风险，评估引用风险；
+# 原型 —— 编码只读「反馈精化后」的需求，不读原始需求（改写闭环）；
+# Scrum —— 开发只读 Sprint 计划，不直接读 backlog 之外的文档。
 _MODEL_CONTRACTS: dict[str, dict[str, StageContract]] = {
     "v-model": _V_MODEL_CONTRACTS,
+    "waterfall": {
+        "coding": StageContract(
+            inputs=("detailed-design",),
+            outputs={},
+            note="严格串行：只依据《详细设计》的接口与模块定义编码。",
+        ),
+        "testing": StageContract(
+            inputs=("coding",),
+            outputs={"TC": 3},
+            note="严格串行：只依据已实现的代码设计测试，不回溯需求文档。",
+        ),
+    },
+    "iterative": {
+        "iteration-review": StageContract(
+            inputs=None,
+            outputs={"RQ": 2},
+            note=(
+                "评审本迭代产物后，必须为下一迭代产出改进需求："
+                "新增条目使用新 RQ 编号，并在正文标注来源"
+                "（基于：RQ-xxx / MOD-xxx），作为下一轮迭代的输入。"
+            ),
+        ),
+    },
+    "spiral": {
+        "risk-analysis": StageContract(
+            inputs=("requirements",),
+            outputs={"RSK": 2},
+            note=(
+                "每条风险使用独立三级标题（`### 风险 RSK-001`），"
+                "正文标注「等级：高/中/低」与缓解措施；"
+                "高风险条目必须在后续设计中被显式回应。"
+            ),
+        ),
+        "architecture": StageContract(
+            inputs=("requirements", "risk-analysis"),
+            outputs={"MOD": 2},
+            note=(
+                "设计决策必须回应风险：受风险影响的模块在其小节内标注"
+                "「缓解：RSK-xxx」。"
+            ),
+        ),
+        "evaluation": StageContract(
+            inputs=None,
+            outputs={},
+            note=(
+                "汇总各风险的关闭情况（引用 RSK-xxx）与产物质量，"
+                "给出「进入下一轮螺旋」或「交付」的明确结论。"
+            ),
+        ),
+    },
+    "prototype": {
+        "coding": StageContract(
+            inputs=("refinement",),
+            outputs={},
+            note=(
+                "改写闭环：只依据「需求精化」阶段的产物编码 —— "
+                "那是吸收了用户反馈的最终需求，而不是原始需求。"
+            ),
+        ),
+        "testing": StageContract(
+            inputs=("coding",),
+            outputs={"TC": 3},
+            note="只依据精化需求实现出的代码设计测试。",
+        ),
+    },
+    "scrum": {
+        "sprint-dev": StageContract(
+            inputs=("sprint-planning",),
+            outputs={},
+            note=(
+                "Scrum 语义：开发只读 Sprint 计划 —— 计划里已写明本 Sprint "
+                "选取了哪些 RQ-xxx 条目，不要回读其它文档；"
+                "实现时在提交说明中对应 RQ-xxx。"
+            ),
+        ),
+        "sprint-review": StageContract(
+            inputs=("sprint-planning", "sprint-dev"),
+            outputs={},
+            note="对照 Sprint 计划逐项给出完成状态，未完成的说明原因并给出去向。",
+        ),
+    },
 }
 
 

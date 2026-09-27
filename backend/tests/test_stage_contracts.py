@@ -61,8 +61,73 @@ def test_waterfall_falls_back_to_default_contract():
     """瀑布模型没有验证通道专属契约，回落通用契约（无配对）。"""
     contract = stage_contract("waterfall", "testing")
     assert contract.pair_stage is None
-    assert contract.inputs is None
+    # 但瀑布的串行读法是专属的：coding 只读详细设计、testing 只读代码。
+    assert stage_contract("waterfall", "coding").inputs == ("detailed-design",)
+    assert stage_contract("waterfall", "testing").inputs == ("coding",)
     assert contract.outputs  # 通用契约仍要求产出 TC
+
+
+# ---------------------------------------------------------------- 其它过程模型
+
+
+def test_waterfall_is_strict_serial_baseline():
+    """瀑布 = 严格串行：与 V 模型的「验证读配对设计」形成对照。"""
+    assert stage_contract("waterfall", "coding").pair_stage is None
+    assert stage_contract("waterfall", "testing").pair_stage is None
+    assert stage_contract("waterfall", "testing").inputs == ("coding",)
+
+
+def test_iterative_review_produces_next_round_requirements():
+    """迭代评审必须产出下一轮的改进需求（新 RQ 编号）。"""
+    contract = stage_contract("iterative", "iteration-review")
+    assert contract.outputs.get("RQ", 0) >= 2
+    assert "下一迭代" in contract.note
+
+
+def test_spiral_risks_are_first_class_entities():
+    """螺旋模型：风险分析产出 RSK 实体，设计必须回应风险。"""
+    risk = stage_contract("spiral", "risk-analysis")
+    assert risk.outputs.get("RSK", 0) >= 2
+    arch = stage_contract("spiral", "architecture")
+    assert set(arch.inputs) == {"requirements", "risk-analysis"}
+    assert "RSK" in arch.note
+
+    # RSK 是一等实体：可解析、可建立缓解关系
+    from app.services.traceability import ENTITY_ORDER, _RELATIONS, parse_entities
+
+    found = parse_entities("### 风险 RSK-001\n等级：高\n缓解：RSK-001 由 MOD-002 承担")
+    assert found["RSK"] == ["RSK-001"]
+    assert ("RSK", "MOD") in _RELATIONS
+    assert "RSK" in ENTITY_ORDER
+
+
+def test_prototype_coding_reads_refined_requirements():
+    """原型模型的改写闭环：编码只读精化后的需求，不读原始需求。"""
+    assert stage_contract("prototype", "coding").inputs == ("refinement",)
+    # 与瀑布对照：瀑布编码读详细设计，原型编码读精化需求。
+    assert stage_contract("waterfall", "coding").inputs == ("detailed-design",)
+
+
+def test_scrum_dev_reads_only_sprint_plan():
+    """Scrum 语义：开发只读 Sprint 计划，不回读其它文档。"""
+    contract = stage_contract("scrum", "sprint-dev")
+    assert contract.inputs == ("sprint-planning",)
+    review = stage_contract("scrum", "sprint-review")
+    assert set(review.inputs) == {"sprint-planning", "sprint-dev"}
+
+
+def test_flow_exposes_spiral_risk_contract(client, project_folder):
+    """flow 接口返回螺旋模型的风险配额。"""
+    headers = _headers(client)
+    project_id = _create_project(client, headers, "spiral", project_folder)
+
+    flow = client.get(f"/api/projects/{project_id}/flow", headers=headers).json()
+    risk = next(
+        item["contract"]
+        for item in flow["stages"]
+        if item["stage"]["code"] == "risk-analysis"
+    )
+    assert risk["outputs"].get("RSK", 0) >= 2
 
 
 def test_every_seeded_stage_resolves_to_a_contract(client):
