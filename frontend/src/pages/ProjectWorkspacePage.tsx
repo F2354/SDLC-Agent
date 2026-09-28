@@ -51,6 +51,7 @@ import {
   type ToolUsage,
   type Traceability,
 } from '../lib/api'
+import { MarkdownText } from '../components/MarkdownText'
 
 const statusLabels: Record<string, string> = {
   collecting: '对话中',
@@ -62,6 +63,20 @@ const statusLabels: Record<string, string> = {
   rejected: '已打回',
   failed: '失败',
   verification_failed: '验证未通过',
+}
+
+// 对话空态的建议问题：降低"从零开口"的门槛。
+const CHAT_SUGGESTIONS = [
+  '这个系统主要解决什么问题？目标用户是谁？',
+  '有哪些必须满足的约束（技术栈、合规、部署环境）？',
+  '列一下最核心的 3 个功能场景',
+]
+
+/** 只取时分，用于消息时间戳。 */
+function formatClock(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 
 // 需要真实写盘并运行验证的阶段：只能使用自动模式。
@@ -547,6 +562,22 @@ export default function ProjectWorkspacePage() {
   const loadingRef = useRef(false)
   const mountedRef = useRef(true)
   const reloadTimerRef = useRef<number | null>(null)
+  // 对话区：自动滚动（仅在用户贴近底部时跟随）+ 输入框自适应高度。
+  const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const chatInputRef = useRef<HTMLTextAreaElement | null>(null)
+  const chatAtBottomRef = useRef(true)
+
+  useEffect(() => {
+    const el = chatScrollRef.current
+    if (!el || !chatAtBottomRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [messages.length, streamingText])
+
+  // 发送成功后程序化清空输入，同步把（自增高的）输入框收回单行高度。
+  useEffect(() => {
+    const el = chatInputRef.current
+    if (el && !chatInput) el.style.height = 'auto'
+  }, [chatInput])
 
   useEffect(() => {
     mountedRef.current = true
@@ -1307,133 +1338,183 @@ export default function ProjectWorkspacePage() {
       )}
 
       {collectingRunId && tab === 'chat' && (
-        <section className="chat-panel workspace-conversation mt-4 flex min-h-0 flex-1 flex-col">
-          <div className="chat-panel-header">
-            <div className="flex items-center gap-3">
-              <span className="chat-agent-avatar">✦</span>
-              <div>
-                <h2 className="text-sm font-bold text-slate-900">{collectingStage?.stage.name ?? ''} · 阶段对话</h2>
-                <p className="mt-1 text-[11px] text-slate-400">与你协作的 Agent 会基于当前项目上下文持续追问和整理。</p>
-              </div>
+        <section className="chat-panel workspace-conversation">
+          <header className="chat-head">
+            <span className="chat-head-avatar">✦</span>
+            <div className="chat-head-copy">
+              <h2>{collectingStage?.stage.name ?? ''} · 阶段对话</h2>
+              <p>{chatSending || streamingText ? 'Agent 正在整理你的输入…' : 'Agent 基于当前项目上下文与你协作，确认后生成阶段产物'}</p>
             </div>
-            <span className="chat-live-pill"><span className="status-dot" /> AI 正在协作</span>
-          </div>
+            <div className="chat-head-meta">
+              <span className="chat-head-count">{messages.length} 条消息</span>
+              <span className={`chat-live-pill${chatSending || streamingText ? ' is-busy' : ''}`}>
+                <span className="status-dot" />
+                {chatSending || streamingText ? '正在生成' : '在线协作'}
+              </span>
+            </div>
+          </header>
 
-          <div className="chat-scroll min-h-0 flex-1 overflow-y-auto px-5 py-6 lg:px-10">
-            {messages.length === 0 && !streamingText && (
+          <div
+            className="chat-scroll"
+            ref={chatScrollRef}
+            onScroll={() => {
+              const el = chatScrollRef.current
+              if (!el) return
+              chatAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 140
+            }}
+          >
+            {messages.length === 0 && !streamingText ? (
               <div className="chat-empty-state">
                 <span className="chat-empty-icon">✦</span>
                 <h3>从这里开始协作</h3>
                 <p>介绍你的目标、用户和核心问题，Agent 会将它们整理成可评审的阶段产物。</p>
+                <div className="chat-suggestions">
+                  {CHAT_SUGGESTIONS.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() => {
+                        setChatInput(suggestion)
+                        chatInputRef.current?.focus()
+                      }}
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="chat-thread">
+                {messages.map((message) =>
+                  message.role === 'user' ? (
+                    <div key={message.id} className="chat-turn chat-turn-user">
+                      <div className="chat-bubble-user">{message.content}</div>
+                      <span className="chat-avatar chat-avatar-user">U</span>
+                    </div>
+                  ) : (
+                    <div key={message.id} className="chat-turn chat-turn-agent">
+                      <span className="chat-avatar">✦</span>
+                      <div className="chat-turn-body">
+                        <div className="chat-turn-meta">
+                          <b>{message.agent_code || 'SDLC Agent'}</b>
+                          <time>{formatClock(message.created_at)}</time>
+                        </div>
+                        <MarkdownText text={message.content} />
+                      </div>
+                    </div>
+                  ),
+                )}
+                {(chatSending || streamingText) && (
+                  <div className="chat-turn chat-turn-agent">
+                    <span className="chat-avatar">✦</span>
+                    <div className="chat-turn-body">
+                      <div className="chat-turn-meta">
+                        <b>SDLC Agent</b>
+                        <span className="chat-typing" aria-label="正在生成"><i /><i /><i /></span>
+                      </div>
+                      {streamingText ? (
+                        <MarkdownText text={streamingText} className="is-streaming" />
+                      ) : (
+                        <div className="chat-thinking">正在组织内容…</div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
-            <div className="mx-auto max-w-3xl space-y-7">
-              {messages.map((message) => {
-                const isUser = message.role === 'user'
-                return (
-                  <div key={message.id} className={`chat-message ${isUser ? 'user' : 'agent'}`}>
-                    {!isUser && <span className="chat-message-avatar">✦</span>}
-                    <div className={isUser ? 'chat-user-content-wrap' : 'min-w-0 flex-1'}>
-                      {!isUser && <div className="chat-message-label">{message.agent_code || 'SDLC Agent'}</div>}
-                      <div className="chat-message-content">{message.content}</div>
-                    </div>
-                    {isUser && <span className="chat-message-avatar user-avatar">U</span>}
-                  </div>
-                )
-              })}
-              {streamingText && (
-                <div className="chat-message agent">
-                  <span className="chat-message-avatar">✦</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="chat-message-label">SDLC Agent <span className="ml-1 text-indigo-400">正在输入</span></div>
-                    <div className="chat-message-content">{streamingText}<span className="ml-0.5 animate-pulse text-indigo-500">▍</span></div>
-                  </div>
-                </div>
-              )}
-            </div>
           </div>
 
-          <div className="chat-composer-wrap">
+          <footer className="chat-dock">
             <form onSubmit={handleChatSubmit} className="chat-composer">
               <textarea
+                ref={chatInputRef}
                 value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
-                placeholder="回复 Agent，补充本阶段信息..."
+                onChange={(event) => {
+                  setChatInput(event.target.value)
+                  const el = event.target
+                  el.style.height = 'auto'
+                  el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault()
+                    event.currentTarget.form?.requestSubmit()
+                  }
+                }}
+                placeholder="回复 Agent，补充本阶段信息…"
                 rows={1}
                 className="chat-composer-input"
               />
-              <div className="chat-composer-footer">
-                <span className="chat-hint">点击发送 · Shift + Enter 换行</span>
+              <div className="chat-composer-bar">
+                <span className="chat-hint"><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
                 <button type="submit" disabled={chatSending || !chatInput.trim()} className="chat-send-button">
-                  {chatSending ? '发送中...' : '发送'} <span>↑</span>
+                  <span className="chat-send-icon">↑</span>
+                  {chatSending ? '生成中' : '发送'}
                 </button>
               </div>
             </form>
             <div className="chat-actions-row">
               <span className="chat-action-note">确认后将生成本阶段正式文档，并进入人工评审。</span>
               <button onClick={() => void handleConfirm()} disabled={confirming} className="chat-confirm-button">
-                {confirming ? '正在生成阶段文档...' : '确认并生成阶段文档'} <span>→</span>
+                {confirming ? '正在生成阶段文档…' : '确认并生成阶段文档'} <span>→</span>
               </button>
             </div>
-          </div>
+          </footer>
         </section>
       )}
 
       {awaitingRunId && (tab === 'chat' || tab === 'stages') && (
-        <div className="mt-6 shrink-0 rounded-lg border border-amber-200 bg-amber-50 p-5">
-          <div className="flex items-center justify-between">
-            <h2 className="font-medium">
-              {awaitingStage?.stage.name ?? ''} · 阶段评审
-            </h2>
-            <span className="text-xs text-slate-500">
-              产物已生成，通过后进入下一阶段
-            </span>
-          </div>
+        <section className="review-card">
+          <header className="review-head">
+            <span className="review-flag">阶段评审</span>
+            <div className="review-title">
+              <h2>{awaitingStage?.stage.name ?? ''}</h2>
+              <p>产物已生成，通过后进入下一阶段</p>
+            </div>
+            <span className="review-status">待人工确认</span>
+          </header>
 
           {agentReviews.length > 0 && (
-            <div className="mt-3 rounded-md border border-slate-200 bg-white p-3">
-              <div className="text-xs font-medium text-slate-500">
-                评审 Agent 建议（自动生成，仅供参考）
+            <div className="review-agent">
+              <div className="review-agent-head">
+                <span className="review-agent-icon">✦</span>
+                <b>评审 Agent 建议</b>
+                <i>自动生成 · 仅供参考</i>
               </div>
-              {agentReviews.map((review) => (
-                <pre
-                  key={review.id}
-                  className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs leading-5 text-slate-700"
-                >
-                  {review.comment}
-                </pre>
-              ))}
+              <div className="review-agent-body">
+                {agentReviews.map((review) => <MarkdownText key={review.id} text={review.comment} />)}
+              </div>
             </div>
           )}
 
           <textarea
             value={reviewComment}
             onChange={(event) => setReviewComment(event.target.value)}
-            placeholder="评审意见（可选）"
-            className="mt-3 min-h-20 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+            placeholder="评审意见（可选）：写清楚通过或打回的理由"
+            className="review-input"
           />
-          <div className="mt-3 flex gap-2">
+          <div className="review-actions">
             <button
               onClick={() => void handleReview('approved')}
               disabled={reviewingId === awaitingRunId}
-              className="rounded-md bg-green-700 px-4 py-2 text-sm text-white disabled:opacity-50"
+              className="review-approve"
             >
-              通过
+              {reviewingId === awaitingRunId ? '处理中…' : '通过并继续'}
             </button>
             <button
               onClick={() => void handleReview('rejected')}
               disabled={reviewingId === awaitingRunId}
-              className="rounded-md bg-red-600 px-4 py-2 text-sm text-white disabled:opacity-50"
+              className="review-reject"
             >
-              打回
+              打回修改
             </button>
           </div>
-          <p className="mt-2 text-xs text-slate-500">
+          <p className="review-note">
             {autoAdvance
               ? '已开启统筹自动推进：通过后将自动启动下一阶段。'
               : '通过后可在阶段卡片上点击「自动生成」启动下一阶段；打回后可「重新生成」。'}
           </p>
-        </div>
+        </section>
       )}
 
       {flow && tab === 'artifacts' && (
