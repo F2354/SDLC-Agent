@@ -135,6 +135,10 @@ export interface ProjectFlowStage {
   /** 与该阶段并行的其它阶段编码。 */
   parallel_peers: string[]
   contract: StageContract | null
+  /** 本次运行实际注入的前置产物规模（字符）与预算、裁剪份数。 */
+  context_chars: number | null
+  context_budget: number | null
+  context_trimmed: number
 }
 
 export interface ProjectFlow {

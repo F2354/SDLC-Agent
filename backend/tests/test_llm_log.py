@@ -41,7 +41,13 @@ def _project(client, headers, folder: str) -> int:
 
 
 def _provider(db) -> LLMProvider:
+    """建一个可被其它测试安全遍历的 Provider。
+
+    注意：密钥必须用真实加密写入 —— 早先图省事写了明文，导致后续遍历
+    Provider 的用例在解密时抛 InvalidToken（测试间污染）。
+    """
     from app.models.user import User
+    from app.services.crypto import encrypt_secret
 
     owner = db.scalar(select(User).limit(1))
     provider = LLMProvider(
@@ -49,8 +55,9 @@ def _provider(db) -> LLMProvider:
         name="log-test",
         type="openai_compatible",
         base_url="http://example.invalid",
-        api_key_enc="x",
+        api_key_enc=encrypt_secret("test-key"),
         default_model="m",
+        enabled=False,
     )
     db.add(provider)
     db.commit()

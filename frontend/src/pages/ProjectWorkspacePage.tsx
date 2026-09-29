@@ -473,7 +473,7 @@ function ProcessFlow({ flow, startDisabled, starting, canStartAt, onStart, liveT
 }
 
 function FlowNode({ item, index, startDisabled, starting, canStartAt, onStart, liveTools, className = '' }: FlowNodeProps) {
-  const { stage, status, stage_run_id, agent_role_name, model, tool_usage, tool_call_count, parallel_peers, contract } = item
+  const { stage, status, stage_run_id, agent_role_name, model, tool_usage, tool_call_count, parallel_peers, contract, context_chars, context_budget, context_trimmed } = item
   const agent = getAgent(stage.code)
   const roleName = agent_role_name ?? agent.name
   const canStart = status === 'pending' && canStartAt(index)
@@ -520,6 +520,18 @@ function FlowNode({ item, index, startDisabled, starting, canStartAt, onStart, l
       )}
       {parallel_peers.length > 0 && status !== 'pending' && (
         <div className="flow-node-parallel" title={`与该阶段并行执行：${parallel_peers.join('、')}`}><i className="parallel-pulse" aria-hidden="true" />并行通道 ×{parallel_peers.length + 1}</div>
+      )}
+      {context_chars != null && (
+        <div
+          className={`flow-node-context${context_trimmed > 0 ? ' is-trimmed' : ''}`}
+          title={
+            `上下文预算 ${(context_budget ?? 0).toLocaleString()} 字符，本次注入 ${context_chars.toLocaleString()} 字符` +
+            (context_trimmed > 0 ? `；已结构化裁剪 ${context_trimmed} 份前置文档` : '；未触发裁剪')
+          }
+        >
+          上下文 {(context_chars / 1000).toFixed(1)}k
+          {context_trimmed > 0 && <b>裁剪×{context_trimmed}</b>}
+        </div>
       )}
       {(canStart || retry) && <div className="flow-node-actions">{canStart && canChat && <button onClick={() => onStart(stage.code, 'chat')} disabled={starting === stage.code || startDisabled}>对话</button>}<button onClick={() => onStart(stage.code, 'auto')} disabled={starting === stage.code || startDisabled}>{starting === stage.code ? '启动中' : retry ? '重试' : '自动'}</button></div>}
     </div>

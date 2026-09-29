@@ -26,6 +26,7 @@ from app.models.stage_run import (
 from app.schemas.stage import ArtifactOut, MessageOut, StageRunOut
 from app.services.event_bus import publish
 from app.services.llm_service import build_openai_client
+from app.services.context_budget import ContextStats, compose_context
 from app.services.llm_log import extract_token_usage, record_llm_call
 from app.services.prompts import (
     build_chat_opening,
@@ -292,12 +293,12 @@ def _previous_artifacts_text(
     project: Project,
     stage: Stage,
     exclude_run_id: int | None = None,
-) -> str:
-    """按阶段契约裁剪前置产物上下文。
+) -> tuple[str, ContextStats]:
+    """按阶段契约筛选前置产物，并在预算内做结构化裁剪。
 
-    契约未声明 inputs 时保持旧行为（全量拼接）；声明了 inputs 时只纳入
-    指定阶段的产物（经 stage_run → stage 关联判断），若一个都匹配不到
-    则回退全量 —— 防御首轮缺产物的场景。
+    返回 (上下文文本, 裁剪统计)。契约未声明 inputs 时保持全量筛选；
+    声明了 inputs 时只纳入指定阶段的产物，匹配不到则回退全量
+    —— 防御首轮缺产物的场景。
     """
     rows = list(
         db.scalars(
@@ -323,7 +324,53 @@ def _previous_artifacts_text(
         ]
         if filtered:
             rows = filtered
-    return "\n\n".join(f"### {row.title}\n{row.content_md}" for row in rows)
+
+    def stage_code_of(row: Artifact) -> str:
+        if row.stage_run is not None and row.stage_run.stage is not None:
+            return row.stage_run.stage.code
+        return ""
+
+    # 同一阶段可能因打回/重跑留下多份产物：只注入最新那一份，
+    # 否则模型会同时看到同一文档的旧版与新版（内容互相矛盾）。
+    latest_by_stage: dict[str, Artifact] = {}
+    for row in rows:
+        code_key = stage_code_of(row)
+        current = latest_by_stage.get(code_key)
+        if current is None or row.id > current.id:
+            latest_by_stage[code_key] = row
+    rows = sorted(latest_by_stage.values(), key=lambda row: row.id)
+
+    # 预算优先级：配对阶段的产物最优先，其次按契约声明的输入顺序。
+    priority: list[str] = []
+    if contract.pair_stage:
+        priority.append(contract.pair_stage)
+    priority.extend(contract.inputs or ())
+    documents = [
+        (stage_code_of(row), row.title, row.content_md or "") for row in rows
+    ]
+    return compose_context(
+        documents, stage_code=stage.code, priority=priority
+    )
+
+
+def _record_context_usage(
+    db: Session, run: StageRun, stage: Stage, stats: ContextStats
+) -> None:
+    """把本次运行的上下文规模记进运行记录与活动日志（可观测性）。"""
+    try:
+        run.context_json = json.dumps(stats.to_json(), ensure_ascii=False)
+        db.add(
+            ActivityEvent(
+                project_id=run.project_id,
+                stage_run_id=run.id,
+                event_type="context_ready",
+                message=f"{stage.name}：{stats.note()}",
+            )
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001 —— 观测失败不影响主流程
+        logger.warning("记录上下文规模失败: stage_run_id=%s", run.id, exc_info=True)
+        db.rollback()
 
 
 def _entity_gap(stage_code: str, text: str) -> str:
@@ -735,7 +782,8 @@ def execute_code_stage(
         {"stage_run_id": run.id, "agent_code": stage.code, "message": stage.name},
     )
 
-    previous_artifacts = _previous_artifacts_text(db, project, stage)
+    previous_artifacts, context_stats = _previous_artifacts_text(db, project, stage)
+    _record_context_usage(db, run, stage, context_stats)
 
     max_attempts = 3 if stage.code == "coding" else 2
     error_info = ""
@@ -985,7 +1033,8 @@ def execute_coding_harness_stage(
         },
     )
 
-    previous_artifacts = _previous_artifacts_text(db, project, stage)
+    previous_artifacts, context_stats = _previous_artifacts_text(db, project, stage)
+    _record_context_usage(db, run, stage, context_stats)
     contract = stage_contract(
         project.process_model.code if project.process_model else None, stage.code
     )
@@ -1184,7 +1233,10 @@ def execute_stage_run(stage_run_id: int) -> None:
                 },
             )
 
-            previous_artifacts = _previous_artifacts_text(db, project, stage)
+            previous_artifacts, context_stats = _previous_artifacts_text(
+                db, project, stage
+            )
+            _record_context_usage(db, run, stage, context_stats)
             contract = stage_contract(
                 project.process_model.code if project.process_model else None,
                 stage.code,
@@ -1399,9 +1451,10 @@ def confirm_stage(run: StageRun, db: Session) -> StageRun:
         f"{'用户' if row.role == 'user' else 'Agent'}: {row.content}"
         for row in transcript_rows
     )
-    previous_artifacts = _previous_artifacts_text(
+    previous_artifacts, context_stats = _previous_artifacts_text(
         db, project, stage, exclude_run_id=run.id
     )
+    _record_context_usage(db, run, stage, context_stats)
 
     system, user_prompt = build_confirm_prompt(
         stage_code=stage.code,

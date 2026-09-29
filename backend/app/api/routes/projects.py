@@ -451,6 +451,12 @@ def _build_flow_stage(
         pair_stage_name=(stage_names or {}).get(contract.pair_stage or ""),
         note=contract.note,
     )
+    context_payload: dict = {}
+    if run is not None and run.context_json:
+        try:
+            context_payload = json.loads(run.context_json)
+        except (TypeError, ValueError):
+            context_payload = {}
     return ProjectFlowStage(
         stage=StageOut.model_validate(stage),
         status=run.status if run is not None else "pending",
@@ -463,6 +469,9 @@ def _build_flow_stage(
         tool_call_count=sum(item.count for item in tool_usage),
         parallel_peers=get_parallel_siblings(model_code, stage.code, stage_codes),
         contract=contract_out,
+        context_chars=context_payload.get("total_chars"),
+        context_budget=context_payload.get("budget"),
+        context_trimmed=int(context_payload.get("trimmed_documents") or 0),
     )
 
 

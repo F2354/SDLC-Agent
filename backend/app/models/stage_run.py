@@ -33,6 +33,8 @@ class StageRun(Base):
     model_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     # 工具循环的调用统计，JSON 形如 {"write_file": 3, "run_tests": 1}。
     tool_usage_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 本次运行的上下文规模与裁剪情况（context_budget 产出），供观测与对比。
+    context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

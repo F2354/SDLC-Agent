@@ -42,6 +42,10 @@ def _ensure_stage_run_columns() -> None:
             conn.exec_driver_sql(
                 "ALTER TABLE stage_runs ADD COLUMN tool_usage_json TEXT"
             )
+        if "context_json" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE stage_runs ADD COLUMN context_json TEXT"
+            )
 
 
 def _ensure_llm_call_log_columns() -> None:

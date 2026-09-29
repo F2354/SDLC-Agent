@@ -83,6 +83,10 @@ class ProjectFlowStage(BaseModel):
     tool_call_count: int = 0
     parallel_peers: list[str] = []
     contract: StageContractOut | None = None
+    # 上下文观测：本次运行实际注入的前置产物规模（字符）与预算、裁剪份数。
+    context_chars: int | None = None
+    context_budget: int | None = None
+    context_trimmed: int = 0
 
 
 class ProjectFlowOut(BaseModel):

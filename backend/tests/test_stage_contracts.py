@@ -237,7 +237,7 @@ def test_previous_artifacts_filtered_by_contract_inputs(client, project_folder):
         _seed_artifacts(db, project_id, stage_run_ids)
 
         unit_stage = stages["unit-test"]
-        text = _previous_artifacts_text(db, project, unit_stage)
+        text, _stats = _previous_artifacts_text(db, project, unit_stage)
         assert "coding 的产物内容" in text
         assert "detailed-design 的产物内容" in text
         # 契约之外的产物被裁掉
@@ -273,7 +273,7 @@ def test_previous_artifacts_falls_back_when_nothing_matches(client, project_fold
 
         # unit-test 契约要求 coding + detailed-design，detailed-design 缺席，
         # 但 coding 有产物 → 过滤结果非空，仍按契约裁剪
-        text = _previous_artifacts_text(db, project, stages["unit-test"])
+        text, _stats = _previous_artifacts_text(db, project, stages["unit-test"])
         assert "coding 的产物内容" in text
         assert "requirements 的产物内容" not in text
 
@@ -308,7 +308,7 @@ def test_previous_artifacts_keeps_all_when_contract_is_none(client, project_fold
         _seed_artifacts(db, project_id, run_ids)
 
         # coding 契约 inputs=None → 两个产物都在
-        text = _previous_artifacts_text(db, project, stages["coding"])
+        text, _stats = _previous_artifacts_text(db, project, stages["coding"])
         assert "requirements 的产物内容" in text
         assert "architecture 的产物内容" in text
 
