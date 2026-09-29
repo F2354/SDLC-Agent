@@ -61,6 +61,10 @@ class LLMCallLog(Base):
         ForeignKey("llm_providers.id"), nullable=True, index=True
     )
     model: Mapped[str] = mapped_column(String(200), default="")
+    # 调用归属与用途：哪个项目的哪次阶段运行、为什么调用（文档生成 / 工具循环 / 评审…）
+    project_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    stage_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    purpose: Mapped[str | None] = mapped_column(String(60), nullable=True)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)

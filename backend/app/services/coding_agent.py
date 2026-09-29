@@ -1,7 +1,10 @@
 import json
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.llm_provider import LLMProvider
@@ -34,6 +37,7 @@ from app.services.code_service import (
     write_many_files,
 )
 from app.services.event_bus import publish
+from app.services.llm_log import extract_token_usage, record_llm_call
 from app.services.llm_service import build_openai_client
 from app.services.skills import skill_context
 
@@ -621,6 +625,7 @@ def run_coding_harness(
     agent_code: str = "developer",
     stage_run_id: int | None = None,
     contract_text: str = "",
+    db: Session | None = None,
 ) -> CodingResult:
     client = build_openai_client(provider)
     resolved_model = model_name or provider.default_model
@@ -650,13 +655,40 @@ def run_coding_harness(
     tool_log: list[str] = []
 
     for turn in range(max_turns):
-        response = client.chat.completions.create(
+        turn_started = time.perf_counter()
+        try:
+            response = client.chat.completions.create(
+                model=resolved_model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.2,
+                max_tokens=4000,
+            )
+        except Exception as exc:
+            record_llm_call(
+                db,
+                provider_id=provider.id,
+                model=resolved_model,
+                purpose="tool_loop",
+                latency_ms=int((time.perf_counter() - turn_started) * 1000),
+                status="failed",
+                error=exc,
+                project_id=project_id,
+                stage_run_id=stage_run_id,
+            )
+            raise
+        prompt_tokens, completion_tokens = extract_token_usage(response)
+        record_llm_call(
+            db,
+            provider_id=provider.id,
             model=resolved_model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-            temperature=0.2,
-            max_tokens=4000,
+            purpose="tool_loop",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=int((time.perf_counter() - turn_started) * 1000),
+            project_id=project_id,
+            stage_run_id=stage_run_id,
         )
         message = response.choices[0].message
         if message.tool_calls:

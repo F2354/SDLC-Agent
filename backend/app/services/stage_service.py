@@ -2,6 +2,7 @@ import atexit
 import json
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TypedDict
@@ -25,6 +26,7 @@ from app.models.stage_run import (
 from app.schemas.stage import ArtifactOut, MessageOut, StageRunOut
 from app.services.event_bus import publish
 from app.services.llm_service import build_openai_client
+from app.services.llm_log import extract_token_usage, record_llm_call
 from app.services.prompts import (
     build_chat_opening,
     build_chat_system_prompt,
@@ -393,6 +395,10 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  #
             user,
             max_tokens=2000,
             model_name=current.get("model_name"),
+            db=db,
+            purpose="document_generate" if attempt == 1 else "document_retry",
+            project_id=current["project_id"],
+            stage_run_id=current["stage_run_id"],
         )
         return {"output": content, "attempts": attempt}
 
@@ -484,6 +490,10 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  #
                 user,
                 max_tokens=1200,
                 model_name=review_model,
+                db=db,
+                purpose="stage_review",
+                project_id=current["project_id"],
+                stage_run_id=current["stage_run_id"],
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("评审 Agent 执行失败: stage_run_id=%s", run.id)
@@ -550,16 +560,53 @@ def _invoke_llm(
     user: str,
     max_tokens: int = 1500,
     model_name: str | None = None,
+    *,
+    db: Session | None = None,
+    purpose: str = "document_generate",
+    project_id: int | None = None,
+    stage_run_id: int | None = None,
 ) -> str:
+    """一次性调用 LLM，并把调用明细落进 llm_call_logs。
+
+    db 为空时退化为纯调用（如无会话上下文的工具场景），不影响主流程。
+    """
+    resolved_model = model_name or provider.default_model
     client = build_openai_client(provider)
-    completion = client.chat.completions.create(
-        model=model_name or provider.default_model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=0.3,
-        max_tokens=max_tokens,
+    started = time.perf_counter()
+    try:
+        completion = client.chat.completions.create(
+            model=resolved_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.3,
+            max_tokens=max_tokens,
+        )
+    except Exception as exc:
+        record_llm_call(
+            db,
+            provider_id=provider.id,
+            model=resolved_model,
+            purpose=purpose,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            status="failed",
+            error=exc,
+            project_id=project_id,
+            stage_run_id=stage_run_id,
+        )
+        raise
+    prompt_tokens, completion_tokens = extract_token_usage(completion)
+    record_llm_call(
+        db,
+        provider_id=provider.id,
+        model=resolved_model,
+        purpose=purpose,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        project_id=project_id,
+        stage_run_id=stage_run_id,
     )
     return completion.choices[0].message.content or ""
 
@@ -571,14 +618,21 @@ def _stream_llm(
     temperature: float = 0.4,
     max_tokens: int = 900,
     model_name: str | None = None,
+    *,
+    db: Session | None = None,
+    purpose: str = "chat_stream",
+    project_id: int | None = None,
+    stage_run_id: int | None = None,
 ) -> str:
     """流式调用 LLM；通过 on_delta 回调逐段推送，返回完整文本。
 
     若 Provider 不支持流式，则回退到一次性调用，保证功能可用。
+    两条路径的耗时与用量都会记进 llm_call_logs。
     """
     resolved_model = model_name or provider.default_model
     client = build_openai_client(provider)
     chunks: list[str] = []
+    started = time.perf_counter()
     try:
         stream = client.chat.completions.create(
             model=resolved_model,
@@ -595,14 +649,50 @@ def _stream_llm(
             if piece:
                 chunks.append(piece)
                 on_delta(piece)
+        record_llm_call(
+            db,
+            provider_id=provider.id,
+            model=resolved_model,
+            purpose=purpose,
+            latency_ms=int((time.perf_counter() - started) * 1000),
+            project_id=project_id,
+            stage_run_id=stage_run_id,
+        )
         return "".join(chunks)
     except Exception:  # noqa: BLE001
         logger.warning("流式调用失败，回退为非流式", exc_info=True)
-    completion = client.chat.completions.create(
+    fallback_started = time.perf_counter()
+    try:
+        completion = client.chat.completions.create(
+            model=resolved_model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    except Exception as exc:
+        record_llm_call(
+            db,
+            provider_id=provider.id,
+            model=resolved_model,
+            purpose=f"{purpose}_fallback",
+            latency_ms=int((time.perf_counter() - fallback_started) * 1000),
+            status="failed",
+            error=exc,
+            project_id=project_id,
+            stage_run_id=stage_run_id,
+        )
+        raise
+    prompt_tokens, completion_tokens = extract_token_usage(completion)
+    record_llm_call(
+        db,
+        provider_id=provider.id,
         model=resolved_model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
+        purpose=f"{purpose}_fallback",
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        latency_ms=int((time.perf_counter() - fallback_started) * 1000),
+        project_id=project_id,
+        stage_run_id=stage_run_id,
     )
     return completion.choices[0].message.content or ""
 
@@ -666,6 +756,10 @@ def execute_code_stage(
             user,
             max_tokens=5000 if stage.code == "coding" else 2500,
             model_name=model_name,
+            db=db,
+            purpose="code_fallback" if attempt == 1 else "code_fallback_retry",
+            project_id=project.id,
+            stage_run_id=run.id,
         )
         target = "code" if stage.code == "coding" else "tests"
         try:
@@ -785,6 +879,7 @@ def _test_case_mapping_md(
     contract,  # StageContract
     provider: LLMProvider,
     model_name: str | None,
+    stage_run_id: int | None = None,
 ) -> str:
     """为工具循环产出的真实测试生成「TC 用例映射」章节。
 
@@ -832,7 +927,15 @@ def _test_case_mapping_md(
 
     for attempt in range(2):
         content = _invoke_llm(
-            provider, system, user, max_tokens=1600, model_name=model_name
+            provider,
+            system,
+            user,
+            max_tokens=1600,
+            model_name=model_name,
+            db=db,
+            purpose="test_mapping" if attempt == 1 else "test_mapping_retry",
+            project_id=project.id,
+            stage_run_id=stage_run_id,
         ).strip()
         found = parse_entities(content).get("TC", [])
         if len(found) >= minimum and "验证：" in content:
@@ -898,6 +1001,7 @@ def execute_coding_harness_stage(
         agent_code=agent_code,
         stage_run_id=run.id,
         contract_text=contract_context_text(contract),
+        db=db,
     )
     if result.tool_usage:
         run.tool_usage_json = json.dumps(result.tool_usage, ensure_ascii=False)
@@ -932,7 +1036,7 @@ def execute_coding_harness_stage(
     if contract.outputs.get("TC"):
         try:
             mapping_md = _test_case_mapping_md(
-                db, project, stage, contract, provider, model_name
+                db, project, stage, contract, provider, model_name, run.id
             )
         except Exception:  # noqa: BLE001
             logger.exception("测试用例映射生成失败: stage=%s", stage.code)
@@ -1232,7 +1336,16 @@ def send_interview_reply(run: StageRun, db: Session) -> Message:
 
     _, chat_model = resolve_stage_agent(provider, stage_code, run.project_id, db)
     reply = (
-        _stream_llm(provider, messages, on_delta, model_name=chat_model)
+        _stream_llm(
+            provider,
+            messages,
+            on_delta,
+            model_name=chat_model,
+            db=db,
+            purpose="chat_stream",
+            project_id=run.project_id,
+            stage_run_id=run.id,
+        )
         or "请继续补充本阶段信息。"
     )
     message = Message(
@@ -1315,7 +1428,15 @@ def confirm_stage(run: StageRun, db: Session) -> StageRun:
         if reason:
             prompt += f"\n\n上次输出未通过校验：\n{reason}\n请修正后完整重新输出。"
         content = _invoke_llm(
-            provider, system, prompt, max_tokens=2000, model_name=confirm_model
+            provider,
+            system,
+            prompt,
+            max_tokens=2000,
+            model_name=confirm_model,
+            db=db,
+            purpose="chat_confirm" if attempt == 1 else "chat_confirm_retry",
+            project_id=run.project_id,
+            stage_run_id=run.id,
         )
         reason = validate_document(stage.code, content)
         if not reason:
@@ -1397,7 +1518,15 @@ def _suggest_review_for_run(
             provider, run.project_id, db
         )
         suggestion = _invoke_llm(
-            review_provider, system, user, max_tokens=1200, model_name=review_model
+            review_provider,
+            system,
+            user,
+            max_tokens=1200,
+            model_name=review_model,
+            db=db,
+            purpose="stage_review",
+            project_id=run.project_id,
+            stage_run_id=run.id,
         ).strip()
     except Exception as exc:  # noqa: BLE001
         logger.exception("评审 Agent 执行失败: stage_run_id=%s", run.id)

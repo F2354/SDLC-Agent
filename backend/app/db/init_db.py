@@ -44,9 +44,32 @@ def _ensure_stage_run_columns() -> None:
             )
 
 
+def _ensure_llm_call_log_columns() -> None:
+    """为既有 SQLite 库补齐 llm_call_logs 的关联与用途列。"""
+    with engine.begin() as conn:
+        columns = [
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(llm_call_logs)")
+        ]
+        if not columns:
+            return
+        if "project_id" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE llm_call_logs ADD COLUMN project_id INTEGER"
+            )
+        if "stage_run_id" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE llm_call_logs ADD COLUMN stage_run_id INTEGER"
+            )
+        if "purpose" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE llm_call_logs ADD COLUMN purpose VARCHAR(60)"
+            )
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_project_columns()
     _ensure_stage_run_columns()
+    _ensure_llm_call_log_columns()
     with SessionLocal() as db:
         seed_all(db)

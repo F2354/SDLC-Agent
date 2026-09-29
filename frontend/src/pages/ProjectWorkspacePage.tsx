@@ -20,6 +20,7 @@ import {
   listProjectMcp,
   discoverProjectMcp,
   getStageRunMessages,
+  getProjectLLMUsage,
   getTraceability,
   listActivityEvents,
   listProjectArtifacts,
@@ -49,6 +50,7 @@ import {
   type Provider,
   type Review,
   type ToolUsage,
+  type LLMUsage,
   type Traceability,
 } from '../lib/api'
 import { MarkdownText } from '../components/MarkdownText'
@@ -71,6 +73,23 @@ const CHAT_SUGGESTIONS = [
   '有哪些必须满足的约束（技术栈、合规、部署环境）？',
   '列一下最核心的 3 个功能场景',
 ]
+
+/** 调用用途的中文标签：与后端 llm_log 的 purpose 取值对应。 */
+const purposeLabels: Record<string, string> = {
+  document_generate: '文档生成',
+  document_retry: '文档重试',
+  stage_review: '评审建议',
+  tool_loop: '工具循环',
+  test_mapping: '用例映射',
+  test_mapping_retry: '用例映射重试',
+  chat_stream: '对话回复',
+  chat_stream_fallback: '对话回复（回退）',
+  chat_confirm: '对话转文档',
+  chat_confirm_retry: '对话转文档重试',
+  code_fallback: '代码生成（兜底）',
+  code_fallback_retry: '代码生成重试',
+  provider_test: '连通性测试',
+}
 
 /** 只取时分，用于消息时间戳。 */
 function formatClock(iso: string): string {
@@ -517,6 +536,8 @@ export default function ProjectWorkspacePage() {
   const [activityEvents, setActivityEvents] = useState<ActivityEvent[]>([])
   const [stats, setStats] = useState<ProjectStats | null>(null)
   const [traceability, setTraceability] = useState<Traceability | null>(null)
+  // 模型调用用量（运行日志页）：调用次数、token、耗时与最近明细。
+  const [llmUsage, setLlmUsage] = useState<LLMUsage | null>(null)
   const [codeTree, setCodeTree] = useState<CodeTree>({ exists: false, files: [] })
   const [selectedCodePath, setSelectedCodePath] = useState('')
   const [codeContent, setCodeContent] = useState('')
@@ -603,7 +624,7 @@ export default function ProjectWorkspacePage() {
       loadingRef.current = true
       setError('')
       try {
-        const [nextProject, nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace, nextCodeTree, nextGitStatus] =
+        const [nextProject, nextFlow, nextArtifacts, nextEvents, nextStats, nextTrace, nextCodeTree, nextGitStatus, nextUsage] =
           await Promise.all([
             getProject(validProjectId),
             getProjectFlow(validProjectId),
@@ -613,6 +634,7 @@ export default function ProjectWorkspacePage() {
             getTraceability(validProjectId),
             getCodeTree(validProjectId),
             getGitStatus(validProjectId),
+            getProjectLLMUsage(validProjectId),
           ])
         if (!mountedRef.current) return
         setProject(nextProject)
@@ -623,6 +645,7 @@ export default function ProjectWorkspacePage() {
         setTraceability(nextTrace)
         setCodeTree(nextCodeTree)
         setGitStatus(nextGitStatus)
+        setLlmUsage(nextUsage)
         if (nextGitStatus.is_repo) {
           void getGitLog(validProjectId).then((entries) => { if (mountedRef.current) setGitLog(entries) })
         }
@@ -1699,22 +1722,101 @@ export default function ProjectWorkspacePage() {
       )}
 
       {tab === 'logs' && (
-        <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="font-medium">Agent 活动日志</h2>
-          <ul className="mt-3 max-h-72 space-y-2 overflow-auto text-sm">
-            {activityEvents.length === 0 && (
-              <li className="text-slate-500">暂无活动记录。</li>
+        <>
+          <section className="usage-panel">
+            <div className="usage-head">
+              <div>
+                <span className="usage-kicker">MODEL USAGE</span>
+                <h2>模型调用用量</h2>
+              </div>
+              <span className="usage-note">每次调用（生成 / 重试 / 评审 / 工具循环 / 对话）都会记入台账</span>
+            </div>
+
+            {!llmUsage || llmUsage.calls === 0 ? (
+              <p className="usage-empty">本项目还没有模型调用记录，运行任一阶段后这里会出现 token 与耗时统计。</p>
+            ) : (
+              <>
+                <div className="usage-cards">
+                  <div className="usage-card">
+                    <span>调用次数</span>
+                    <b>{llmUsage.calls}</b>
+                    {llmUsage.failed_calls > 0 && <i className="is-warn">{llmUsage.failed_calls} 次失败</i>}
+                  </div>
+                  <div className="usage-card">
+                    <span>总 token</span>
+                    <b>{llmUsage.total_tokens.toLocaleString()}</b>
+                    <i>输入 {llmUsage.prompt_tokens.toLocaleString()} · 输出 {llmUsage.completion_tokens.toLocaleString()}</i>
+                  </div>
+                  <div className="usage-card">
+                    <span>平均耗时</span>
+                    <b>{(llmUsage.avg_latency_ms / 1000).toFixed(1)}s</b>
+                    <i>最长 {(llmUsage.max_latency_ms / 1000).toFixed(1)}s</i>
+                  </div>
+                  <div className="usage-card">
+                    <span>累计模型时间</span>
+                    <b>{(llmUsage.total_latency_ms / 60000).toFixed(1)}m</b>
+                    <i>{llmUsage.by_model.length} 个模型</i>
+                  </div>
+                </div>
+
+                <div className="usage-grid">
+                  <div className="usage-table">
+                    <div className="usage-table-head"><span>用途</span><span>次数</span><span>token</span><span>平均耗时</span></div>
+                    {llmUsage.by_purpose.map((group) => (
+                      <div className="usage-table-row" key={group.key}>
+                        <span className="usage-purpose">{purposeLabels[group.key] ?? group.key}</span>
+                        <span>{group.calls}</span>
+                        <span>{group.total_tokens.toLocaleString()}</span>
+                        <span>{(group.avg_latency_ms / 1000).toFixed(1)}s</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="usage-table">
+                    <div className="usage-table-head"><span>模型</span><span>次数</span><span>token</span><span>平均耗时</span></div>
+                    {llmUsage.by_model.map((group) => (
+                      <div className="usage-table-row" key={group.key}>
+                        <span className="usage-purpose">{group.key}</span>
+                        <span>{group.calls}</span>
+                        <span>{group.total_tokens.toLocaleString()}</span>
+                        <span>{(group.avg_latency_ms / 1000).toFixed(1)}s</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="usage-recent">
+                  <div className="usage-table-head"><span>最近调用</span><span>用途</span><span>token</span><span>耗时</span><span>时间</span></div>
+                  {llmUsage.recent.slice(0, 12).map((call) => (
+                    <div className={`usage-table-row usage-row-5${call.status !== 'success' ? ' is-failed' : ''}`} key={call.id} title={call.error ?? undefined}>
+                      <span className="usage-purpose">{call.model || '（未标注模型）'}</span>
+                      <span>{purposeLabels[call.purpose ?? ''] ?? call.purpose ?? '—'}</span>
+                      <span>{call.total_tokens.toLocaleString()}</span>
+                      <span>{(call.latency_ms / 1000).toFixed(1)}s</span>
+                      <span>{call.created_at ? formatClock(call.created_at) : '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
-            {activityEvents.map((event) => (
-              <li key={event.id} className="flex items-start gap-2 text-slate-600">
-                <span className="shrink-0 text-xs text-slate-400">
-                  {renderTime(event.created_at)}
-                </span>
-                <span>{event.message}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
+          </section>
+
+          <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
+            <h2 className="font-medium">Agent 活动日志</h2>
+            <ul className="mt-3 max-h-72 space-y-2 overflow-auto text-sm">
+              {activityEvents.length === 0 && (
+                <li className="text-slate-500">暂无活动记录。</li>
+              )}
+              {activityEvents.map((event) => (
+                <li key={event.id} className="flex items-start gap-2 text-slate-600">
+                  <span className="shrink-0 text-xs text-slate-400">
+                    {renderTime(event.created_at)}
+                  </span>
+                  <span>{event.message}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </>
       )}
     </div>
   )

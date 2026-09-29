@@ -902,3 +902,35 @@ select:focus {
 @media (prefers-reduced-motion: reduce) {
   .page-container { animation: none !important; }
 }
+
+/* ===== 模型调用用量面板（运行日志页） ===== */
+.usage-panel { margin-top: 6px; overflow: hidden; border: 1px solid #e5eaf2; border-radius: 16px; background: #ffffff; box-shadow: 0 18px 40px -34px rgba(15, 23, 42, 0.4); }
+.usage-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid #eef1f6; padding: 14px 18px; background: linear-gradient(180deg, rgba(250, 251, 254, 0.9), #ffffff); }
+.usage-kicker { color: #6366f1; font-size: 10px; font-weight: 800; letter-spacing: 0.14em; }
+.usage-head h2 { margin: 3px 0 0; color: #172033; font-size: 14px; font-weight: 750; }
+.usage-note { max-width: 420px; color: #a3afc2; font-size: 10.5px; text-align: right; }
+.usage-empty { margin: 0; padding: 26px 18px; color: #94a3b8; font-size: 12px; }
+
+.usage-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: #eef1f6; }
+.usage-card { display: flex; flex-direction: column; gap: 3px; padding: 14px 16px; background: #ffffff; }
+.usage-card span { color: #94a3b8; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; }
+.usage-card b { color: #172033; font-size: 20px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.usage-card i { color: #a3afc2; font-size: 10px; font-style: normal; }
+.usage-card i.is-warn { color: #d97706; font-weight: 700; }
+
+.usage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding: 16px 18px 4px; }
+.usage-table { overflow: hidden; border: 1px solid #eef1f6; border-radius: 12px; }
+.usage-table-head, .usage-table-row { display: grid; grid-template-columns: minmax(0, 1.6fr) 0.6fr 0.9fr 0.9fr; gap: 8px; padding: 7px 12px; font-size: 11px; }
+.usage-table-head { color: #94a3b8; background: #fafbfe; font-weight: 700; letter-spacing: 0.04em; }
+.usage-table-row { border-top: 1px solid #f4f6fa; color: #475569; font-variant-numeric: tabular-nums; transition: background 140ms ease; }
+.usage-table-row:hover { background: #f8fafe; }
+.usage-purpose { overflow: hidden; color: #33415a; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.usage-recent { margin: 18px 18px 18px; overflow: hidden; border: 1px solid #eef1f6; border-radius: 12px; }
+.usage-recent .usage-table-head, .usage-row-5 { grid-template-columns: minmax(0, 1.5fr) 0.9fr 0.7fr 0.7fr 0.7fr; }
+.usage-row-5.is-failed { background: #fff7f7; color: #b91c1c; }
+.usage-row-5.is-failed .usage-purpose { color: #b91c1c; }
+
+@media (max-width: 1100px) {
+  .usage-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-grid { grid-template-columns: minmax(0, 1fr); }
+}

@@ -476,8 +476,50 @@ export function getProjectStats(projectId: number) {
   return request<ProjectStats>(`/projects/${projectId}/stats`)
 }
 
+/** 模型调用用量：按模型/用途分组的统计 + 最近调用明细。 */
+export interface LLMUsageGroup {
+  key: string
+  calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  avg_latency_ms: number
+}
+
+export interface LLMCall {
+  id: number
+  model: string
+  purpose: string | null
+  stage_run_id: number | null
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  latency_ms: number
+  status: string
+  error: string | null
+  created_at: string | null
+}
+
+export interface LLMUsage {
+  calls: number
+  failed_calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  avg_latency_ms: number
+  max_latency_ms: number
+  total_latency_ms: number
+  by_model: LLMUsageGroup[]
+  by_purpose: LLMUsageGroup[]
+  recent: LLMCall[]
+}
+
 export function getTraceability(projectId: number) {
   return request<Traceability>(`/projects/${projectId}/traceability`)
+}
+
+export function getProjectLLMUsage(projectId: number, limit = 20) {
+  return request<LLMUsage>(`/projects/${projectId}/llm-usage?limit=${limit}`)
 }
 
 export function listProjectSkills(projectId: number) {

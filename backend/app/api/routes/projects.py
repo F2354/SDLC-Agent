@@ -30,7 +30,13 @@ from app.schemas.stage import (
     StageRunOut,
     StageStartRequest,
 )
-from app.schemas.analytics import ProjectStatsOut, TraceabilityOut
+from app.schemas.analytics import (
+    LLMCallOut,
+    LLMUsageGroupOut,
+    LLMUsageOut,
+    ProjectStatsOut,
+    TraceabilityOut,
+)
 from app.services.event_bus import publish
 from app.services.stage_service import (
     STAGE_AGENT_CODE,
@@ -39,6 +45,7 @@ from app.services.stage_service import (
     serialize_stage_run,
     start_stage_run_async,
 )
+from app.services.llm_log import recent_calls, usage_summary
 from app.services.traceability import compute_traceability
 from app.services.agent_roles import get_role_spec
 from app.services.process_graph import get_parallel_siblings, get_stage_dependencies
@@ -323,6 +330,47 @@ def list_activity_events(
             .order_by(ActivityEvent.id.desc())
             .limit(100)
         )
+    )
+
+
+@router.get("/{project_id}/llm-usage", response_model=LLMUsageOut)
+def project_llm_usage(
+    project_id: int,
+    limit: int = 20,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """项目级模型调用用量：总量、按模型/用途分组、最近调用明细。"""
+    project = get_owned_project(project_id, user, db)
+    summary = usage_summary(db, project.id)
+    rows = recent_calls(db, project.id, limit=limit)
+    return LLMUsageOut(
+        calls=summary.calls,
+        failed_calls=summary.failed_calls,
+        prompt_tokens=summary.prompt_tokens,
+        completion_tokens=summary.completion_tokens,
+        total_tokens=summary.total_tokens,
+        avg_latency_ms=summary.avg_latency_ms,
+        max_latency_ms=summary.max_latency_ms,
+        total_latency_ms=summary.total_latency_ms,
+        by_model=[LLMUsageGroupOut(**vars(group)) for group in summary.by_model],
+        by_purpose=[LLMUsageGroupOut(**vars(group)) for group in summary.by_purpose],
+        recent=[
+            LLMCallOut(
+                id=row.id,
+                model=row.model,
+                purpose=row.purpose,
+                stage_run_id=row.stage_run_id,
+                prompt_tokens=row.prompt_tokens,
+                completion_tokens=row.completion_tokens,
+                total_tokens=row.total_tokens,
+                latency_ms=row.latency_ms,
+                status=row.status,
+                error=row.error,
+                created_at=row.created_at.isoformat() if row.created_at else None,
+            )
+            for row in rows
+        ],
     )
 
 

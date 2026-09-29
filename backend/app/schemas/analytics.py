@@ -48,3 +48,44 @@ class ProjectStatsOut(BaseModel):
     artifact_count: int
     total_chars: int
     entity_counts: dict[str, int]
+
+
+class LLMUsageGroupOut(BaseModel):
+    """按模型或用途聚合的用量分组。"""
+
+    key: str
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    avg_latency_ms: int = 0
+
+
+class LLMCallOut(BaseModel):
+    id: int
+    model: str = ""
+    purpose: str | None = None
+    stage_run_id: int | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: int = 0
+    status: str = "success"
+    error: str | None = None
+    created_at: str | None = None
+
+
+class LLMUsageOut(BaseModel):
+    """项目级模型调用用量：总量 + 按模型/用途分组 + 最近调用。"""
+
+    calls: int = 0
+    failed_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    avg_latency_ms: int = 0
+    max_latency_ms: int = 0
+    total_latency_ms: int = 0
+    by_model: list[LLMUsageGroupOut] = []
+    by_purpose: list[LLMUsageGroupOut] = []
+    recent: list[LLMCallOut] = []

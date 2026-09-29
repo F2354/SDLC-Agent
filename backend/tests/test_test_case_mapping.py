@@ -115,7 +115,7 @@ def test_mapping_md_generated_and_validated(client, project_folder, monkeypatch)
     )
     calls = {"n": 0}
 
-    def fake_llm(provider, system, user, max_tokens=0, model_name=None):
+    def fake_llm(provider, system, user, max_tokens=0, model_name=None, **kwargs):
         calls["n"] += 1
         return good if calls["n"] >= 2 else "（不合格输出）"
 
