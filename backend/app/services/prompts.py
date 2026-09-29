@@ -1,3 +1,4 @@
+from app.services.review_checklist import build_checklist_instruction
 from app.services.traceability import STAGE_ENTITY_REQUIREMENTS
 
 # 实体类型的中文名，用于提示词与校验信息。
@@ -521,8 +522,7 @@ def build_review_prompt(
     content: str,
     traceability_summary: str = "",
 ) -> tuple[str, str]:
-    checklist = REVIEW_CHECKLISTS.get(stage_code, _DEFAULT_CHECKLIST)
-    checklist_text = "\n".join(f"- {item}" for item in checklist)
+    checklist_text = build_checklist_instruction(stage_code)
     user = (
         f"阶段：{stage_name}\n\n"
         f"待评审产物（Markdown）：\n{content or '（空）'}\n\n"
@@ -532,7 +532,7 @@ def build_review_prompt(
         "## 评审结论\n"
         "通过 / 需修改\n\n"
         "## 检查清单核对\n"
-        "逐项列出：检查项 - 通过/不通过 - 原因\n\n"
+        "逐项列出，格式严格为：- [检查项 id] 通过/不通过/不适用 —— 原因\n\n"
         "## 修改建议\n"
         "列出具体可执行的修改点；若无需修改则写“无”。"
     )

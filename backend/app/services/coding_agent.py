@@ -4,10 +4,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.llm_provider import LLMProvider
+from app.models.stage_run import StageRun
 from app.services.agent_roles import (
     GIT_TOOLS,
     READ_TOOLS,
@@ -260,6 +262,8 @@ class CodingResult:
     # 工具调用统计与可读日志，供过程模型视图展示"谁用什么工具干了什么"。
     tool_usage: dict[str, int] = field(default_factory=dict)
     tool_log: list[str] = field(default_factory=list)
+    # 本次是否从上次中断处续跑（值为续跑起始轮次），否则为 None。
+    resumed_from_turn: int | None = None
 
 
 # 允许通过 `python -m` 执行的模块白名单。
@@ -614,6 +618,122 @@ def build_agent_system_prompt(agent_code: str) -> str:
     )
 
 
+
+# 单条消息持久化上限与整体上限：既要能续跑，也不能把库写肿。
+_PERSIST_MSG_CHARS = 6000
+_PERSIST_TOTAL_CHARS = 200_000
+
+
+def persist_harness_state(
+    db: Session | None,
+    stage_run_id: int | None,
+    messages: list[dict],
+    turn: int,
+    tool_usage: dict[str, int],
+    tool_log: list[str],
+) -> None:
+    """把工具循环的会话状态写进 stage_runs.harness_json，供断点续跑。
+
+    每轮结束调用一次：即使进程被中断，下一次运行也能接着上次的上下文。
+    写失败只记日志，不影响循环。
+    """
+    if db is None or stage_run_id is None:
+        return
+    slim: list[dict] = []
+    used = 0
+    for message in messages:
+        content = message.get("content") or ""
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False)
+        trimmed = content[:_PERSIST_MSG_CHARS]
+        if used + len(trimmed) > _PERSIST_TOTAL_CHARS:
+            break
+        used += len(trimmed)
+        slim.append({**message, "content": trimmed})
+    try:
+        run = db.get(StageRun, stage_run_id)
+        if run is None:
+            return
+        run.harness_json = json.dumps(
+            {
+                "messages": slim,
+                "turn": turn,
+                "tool_usage": tool_usage,
+                "tool_log": tool_log[-40:],
+            },
+            ensure_ascii=False,
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001 —— 持久化失败不阻断循环
+        logger.warning("持久化工具循环状态失败: stage_run_id=%s", stage_run_id, exc_info=True)
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def load_resume_state(
+    db: Session | None, project_id: int, stage_id: int, exclude_run_id: int | None = None
+) -> tuple[list[dict] | None, int]:
+    """找同阶段上一次失败运行留下的会话状态。
+
+    返回 (消息列表, 已用轮次)；没有可续跑的记录时返回 (None, 0)。
+    """
+    if db is None:
+        return None, 0
+    stmt = (
+        select(StageRun)
+        .where(
+            StageRun.project_id == project_id,
+            StageRun.stage_id == stage_id,
+            StageRun.harness_json.is_not(None),
+            StageRun.status.in_(("verification_failed", "failed", "rejected")),
+        )
+        .order_by(StageRun.id.desc())
+    )
+    if exclude_run_id is not None:
+        stmt = stmt.where(StageRun.id != exclude_run_id)
+    run = db.scalar(stmt)
+    if run is None or not run.harness_json:
+        return None, 0
+    try:
+        payload = json.loads(run.harness_json)
+    except (TypeError, ValueError):
+        return None, 0
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return None, 0
+    return messages, int(payload.get("turn") or 0)
+
+
+def build_harness_messages(
+    *, system: str, user: str, resume_messages: list[dict] | None, resume_turns: int
+) -> tuple[list[dict], int | None]:
+    """构造工具循环的初始消息。
+
+    有续跑快照时沿用上次会话（模型已看过前置文档与已读文件），只追加
+    一条"续跑"指令；否则用系统提示词 + 首次任务描述。
+    返回 (消息列表, 续跑起始轮次或 None)。
+    """
+    if resume_messages:
+        messages = list(resume_messages)
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"[续跑] 上次执行在第 {resume_turns} 轮中断，工作区文件已保留，"
+                    "本轮不要重新通读代码。请先查看验证/测试结果，"
+                    "针对失败项直接修改文件并重新运行验证，直到通过。"
+                ),
+            }
+        )
+        return messages, resume_turns
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ], None
+
+
 def run_coding_harness(
     project_id: int,
     provider: LLMProvider,
@@ -626,6 +746,8 @@ def run_coding_harness(
     stage_run_id: int | None = None,
     contract_text: str = "",
     db: Session | None = None,
+    resume_messages: list[dict] | None = None,
+    resume_turns: int = 0,
 ) -> CodingResult:
     client = build_openai_client(provider)
     resolved_model = model_name or provider.default_model
@@ -644,15 +766,16 @@ def run_coding_harness(
         f"你的默认工作目录是 {target}/；路径以 code/ 或 tests/ 开头时会落到对应目录。\n"
         f"{task}"
     )
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
+    messages, resumed_from = build_harness_messages(
+        system=system, user=user, resume_messages=resume_messages, resume_turns=resume_turns
+    )
     tools = tools_for_agent(agent_code)
     verify = None
     tests = None
     tool_usage: dict[str, int] = {}
     tool_log: list[str] = []
+    if resumed_from is not None:
+        tool_log.append(f"从上次中断的第 {resumed_from} 轮续跑（沿用会话与工作区）")
 
     for turn in range(max_turns):
         turn_started = time.perf_counter()
@@ -743,6 +866,9 @@ def run_coding_harness(
             verify = run_verify(project_id)
             tests = run_stage_tests(project_id)
             if _agent_goal_reached(agent_code, verify, tests):
+                persist_harness_state(
+                    db, stage_run_id, messages, turn + 1, tool_usage, tool_log
+                )
                 return CodingResult(
                     ok=True,
                     verify=verify,
@@ -750,6 +876,7 @@ def run_coding_harness(
                     turn_count=turn + 1,
                     tool_usage=tool_usage,
                     tool_log=tool_log,
+                    resumed_from_turn=resumed_from,
                 )
             messages.append(
                 {
@@ -777,6 +904,9 @@ def run_coding_harness(
             if turn < max_turns - 1:
                 # 轮数充裕时温和催办；临近耗尽时升级为明确的收官指令，
                 # 禁止继续读取文件（实测模型会陷入"读取循环"耗尽轮数）。
+                persist_harness_state(
+                    db, stage_run_id, messages, turn + 1, tool_usage, tool_log
+                )
                 if max_turns - turn <= 3:
                     messages.append(
                         {
@@ -798,6 +928,7 @@ def run_coding_harness(
                         }
                     )
 
+    persist_harness_state(db, stage_run_id, messages, max_turns, tool_usage, tool_log)
     return CodingResult(
         ok=False,
         verify=verify,
@@ -805,4 +936,5 @@ def run_coding_harness(
         turn_count=max_turns,
         tool_usage=tool_usage,
         tool_log=tool_log,
+        resumed_from_turn=resumed_from,
     )

@@ -35,6 +35,8 @@ class StageRun(Base):
     tool_usage_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 本次运行的上下文规模与裁剪情况（context_budget 产出），供观测与对比。
     context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 工具循环的会话快照（消息历史与轮次），用于失败后的断点续跑。
+    harness_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -138,6 +140,8 @@ class Review(Base):
     reviewer_type: Mapped[str] = mapped_column(String(20), default="user")
     result: Mapped[str] = mapped_column(String(20))
     comment: Mapped[str] = mapped_column(Text, default="")
+    # 结构化清单结论：{"item-id": {"verdict": "passed|failed|na", "note": "..."}}
+    checklist_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     stage_run: Mapped["StageRun"] = relationship(back_populates="reviews")

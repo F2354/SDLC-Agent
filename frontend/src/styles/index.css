@@ -938,3 +938,22 @@ select:focus {
 .flow-node-context { display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; color: #0f766e; font-size: 9px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .flow-node-context b { border-radius: 999px; padding: 0 5px; color: #b45309; background: #fef3c7; font-size: 8px; font-weight: 700; }
 .flow-node-context.is-trimmed { color: #b45309; }
+
+/* ===== 评审清单：逐项判定 ===== */
+.review-checklist { margin: 14px 18px 0; overflow: hidden; border: 1px solid #eadfc6; border-radius: 13px; background: #ffffff; }
+.review-checklist-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #f4ecdc; padding: 9px 13px; background: #fffdf7; }
+.review-checklist-head b { color: #422006; font-size: 11.5px; }
+.review-checklist-head i { color: #b08968; font-size: 10px; font-style: normal; }
+.review-check-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid #f7f3ea; padding: 9px 13px; }
+.review-check-row:first-of-type { border-top: 0; }
+.review-check-row.is-failed { background: #fff7f7; }
+.review-check-copy { min-width: 0; }
+.review-check-copy span { display: block; color: #3f2d12; font-size: 12px; line-height: 1.6; }
+.review-check-copy small { display: block; margin-top: 2px; color: #b08968; font-size: 10px; }
+.review-check-agent { display: block; margin-top: 3px; color: #6366f1; font-size: 10px; font-style: normal; }
+.review-check-actions { display: flex; flex: 0 0 auto; gap: 4px; }
+.review-verdict { border: 1px solid #e2e8f0; border-radius: 8px; padding: 4px 9px; color: #64748b; background: #fff; font-size: 10.5px; font-weight: 600; transition: transform 120ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease; }
+.review-verdict:hover { transform: translateY(-1px); }
+.review-verdict-passed.is-on { border-color: #059669; color: #fff; background: #10b981; }
+.review-verdict-failed.is-on { border-color: #e11d48; color: #fff; background: #f43f5e; }
+.review-verdict-na.is-on { border-color: #94a3b8; color: #fff; background: #94a3b8; }

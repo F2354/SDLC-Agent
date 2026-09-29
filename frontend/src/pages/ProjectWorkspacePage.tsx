@@ -21,6 +21,7 @@ import {
   discoverProjectMcp,
   getStageRunMessages,
   getProjectLLMUsage,
+  getStageChecklist,
   getTraceability,
   listActivityEvents,
   listProjectArtifacts,
@@ -50,7 +51,9 @@ import {
   type Provider,
   type Review,
   type ToolUsage,
+  type ChecklistVerdict,
   type LLMUsage,
+  type StageChecklist,
   type Traceability,
 } from '../lib/api'
 import { MarkdownText } from '../components/MarkdownText'
@@ -550,6 +553,9 @@ export default function ProjectWorkspacePage() {
   const [traceability, setTraceability] = useState<Traceability | null>(null)
   // 模型调用用量（运行日志页）：调用次数、token、耗时与最近明细。
   const [llmUsage, setLlmUsage] = useState<LLMUsage | null>(null)
+  // 评审清单：检查项 + Agent 建议 + 人工逐项判定。
+  const [checklist, setChecklist] = useState<StageChecklist | null>(null)
+  const [verdicts, setVerdicts] = useState<Record<string, ChecklistVerdict>>({})
   const [codeTree, setCodeTree] = useState<CodeTree>({ exists: false, files: [] })
   const [selectedCodePath, setSelectedCodePath] = useState('')
   const [codeContent, setCodeContent] = useState('')
@@ -670,6 +676,18 @@ export default function ProjectWorkspacePage() {
     },
     [validProjectId],
   )
+
+  // 通过门禁：清单必须逐项判定，且不能存在"不通过"项（与后端一致，提前反馈）。
+  const checklistPending = checklist
+    ? checklist.items.filter((item) => !verdicts[item.id]).length
+    : 0
+  const checklistFailed = Object.entries(verdicts).filter(([, value]) => value.verdict === 'failed')
+  const approveBlocked = (checklist?.items.length ?? 0) > 0 && (checklistPending > 0 || checklistFailed.length > 0)
+  const approveBlockReason = checklistPending > 0
+    ? `还有 ${checklistPending} 项未判定`
+    : checklistFailed.length > 0
+      ? '存在不通过项：请先修改产物，或把该项标记为不适用'
+      : ''
 
   const hasActiveStages =
     flow?.stages.some(({ status }) => status === 'generating' || status === 'collecting') ??
@@ -795,6 +813,37 @@ export default function ProjectWorkspacePage() {
       (status === 'awaiting_review' || status === 'verification_failed') && !!stage_run_id,
   )
   const awaitingRunId = awaitingStage?.stage_run_id ?? null
+  useEffect(() => {
+    if (awaitingRunId === null) {
+      setChecklist(null)
+      setVerdicts({})
+      return
+    }
+    let stale = false
+    void getStageChecklist(awaitingRunId)
+      .then((data) => {
+        if (stale) return
+        setChecklist(data)
+        // 用评审 Agent 的建议预填，人工可逐项改判（界面上标注来源）。
+        const prefilled: Record<string, ChecklistVerdict> = {}
+        for (const item of data.items) {
+          const suggestion = data.agent[item.id]
+          if (suggestion) {
+            prefilled[item.id] = {
+              verdict: (suggestion.verdict as ChecklistVerdict['verdict']) ?? 'passed',
+              note: suggestion.note ?? '',
+            }
+          }
+        }
+        setVerdicts(prefilled)
+      })
+      .catch(() => {
+        if (!stale) setChecklist(null)
+      })
+    return () => {
+      stale = true
+    }
+  }, [awaitingRunId])
 
   useEffect(() => {
     if (!collectingRunId) {
@@ -919,9 +968,9 @@ export default function ProjectWorkspacePage() {
     setError('')
     try {
       if (result === 'approved') {
-        await approveStageRun(awaitingRunId, reviewComment)
+        await approveStageRun(awaitingRunId, reviewComment, verdicts)
       } else {
-        await rejectStageRun(awaitingRunId, reviewComment)
+        await rejectStageRun(awaitingRunId, reviewComment, verdicts)
       }
       setReviewComment('')
       await load({ force: true })
@@ -1522,6 +1571,53 @@ export default function ProjectWorkspacePage() {
             </div>
           )}
 
+          {checklist && checklist.items.length > 0 && (
+            <div className="review-checklist">
+              <div className="review-checklist-head">
+                <b>评审清单</b>
+                <i>
+                  {checklist.items.filter((item) => verdicts[item.id]).length}/{checklist.items.length} 项已判定
+                  {Object.values(verdicts).some((v) => v.verdict === 'failed') && ' · 存在未通过项'}
+                </i>
+              </div>
+              {checklist.items.map((item) => {
+                const current = verdicts[item.id]
+                const fromAgent = Boolean(checklist.agent[item.id])
+                return (
+                  <div className={`review-check-row${current?.verdict === 'failed' ? ' is-failed' : ''}`} key={item.id}>
+                    <div className="review-check-copy">
+                      <span>{item.text}</span>
+                      {item.hint && <small>{item.hint}</small>}
+                      {fromAgent && (
+                        <em className="review-check-agent">
+                          Agent 建议：{checklist.agent[item.id].verdict === 'passed' ? '通过' : checklist.agent[item.id].verdict === 'failed' ? '不通过' : '不适用'}
+                          {checklist.agent[item.id].note ? `（${checklist.agent[item.id].note}）` : ''}
+                        </em>
+                      )}
+                    </div>
+                    <div className="review-check-actions">
+                      {(['passed', 'failed', 'na'] as const).map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className={`review-verdict review-verdict-${value}${current?.verdict === value ? ' is-on' : ''}`}
+                          onClick={() =>
+                            setVerdicts((prev) => ({
+                              ...prev,
+                              [item.id]: { verdict: value, note: prev[item.id]?.note ?? '' },
+                            }))
+                          }
+                        >
+                          {value === 'passed' ? '通过' : value === 'failed' ? '不通过' : '不适用'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
           <textarea
             value={reviewComment}
             onChange={(event) => setReviewComment(event.target.value)}
@@ -1531,8 +1627,9 @@ export default function ProjectWorkspacePage() {
           <div className="review-actions">
             <button
               onClick={() => void handleReview('approved')}
-              disabled={reviewingId === awaitingRunId}
+              disabled={reviewingId === awaitingRunId || approveBlocked}
               className="review-approve"
+              title={approveBlockReason || '通过后进入下一阶段'}
             >
               {reviewingId === awaitingRunId ? '处理中…' : '通过并继续'}
             </button>

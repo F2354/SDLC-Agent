@@ -26,7 +26,9 @@ from app.models.stage_run import (
 from app.schemas.stage import ArtifactOut, MessageOut, StageRunOut
 from app.services.event_bus import publish
 from app.services.llm_service import build_openai_client
+from app.services import review_checklist
 from app.services.context_budget import ContextStats, compose_context
+from app.services.review_checklist import item_ids, items_for, parse_verdicts
 from app.services.llm_log import extract_token_usage, record_llm_call
 from app.services.prompts import (
     build_chat_opening,
@@ -46,7 +48,7 @@ from app.services.code_service import (
 )
 from app.services.agent_roles import get_role_spec
 from app.services.agents import resolve_agent_model
-from app.services.coding_agent import run_coding_harness
+from app.services.coding_agent import load_resume_state, run_coding_harness
 from app.services.artifact_file import write_artifact_file
 from app.services.traceability import (
     STAGE_ENTITY_REQUIREMENTS,
@@ -547,6 +549,7 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  #
             suggestion = f"评审 Agent 执行失败：{exc}"
         if not suggestion.strip():
             suggestion = "评审 Agent 未返回内容。"
+        agent_verdicts = parse_verdicts(current["stage_code"], suggestion)
         db.add(
             Review(
                 stage_run_id=run.id,
@@ -554,6 +557,9 @@ def build_stage_graph(provider: LLMProvider, db: Session, state: AgentState):  #
                 reviewer_type="agent",
                 result="suggested",
                 comment=suggestion,
+                checklist_json=(
+                    json.dumps(agent_verdicts, ensure_ascii=False) if agent_verdicts else None
+                ),
             )
         )
         db.add(
@@ -1039,18 +1045,27 @@ def execute_coding_harness_stage(
         project.process_model.code if project.process_model else None, stage.code
     )
 
+    # 断点续跑：同阶段上一次失败/打回的运行若留下会话快照，就接着它继续，
+    # 而不是从零重读工作区（实测 coding 有连续三次从头重来的浪费）。
+    resume_messages, resume_turns = load_resume_state(
+        db, project.id, stage.id, exclude_run_id=run.id
+    )
+    remaining_turns = max(4, 10 - resume_turns) if resume_messages else 10
+
     result = run_coding_harness(
         project_id=project.id,
         provider=provider,
         project_name=project.name,
         project_description=project.description,
         previous_artifacts=previous_artifacts,
-        max_turns=10,
+        max_turns=remaining_turns,
         model_name=model_name,
         agent_code=agent_code,
         stage_run_id=run.id,
         contract_text=contract_context_text(contract),
         db=db,
+        resume_messages=resume_messages,
+        resume_turns=resume_turns,
     )
     if result.tool_usage:
         run.tool_usage_json = json.dumps(result.tool_usage, ensure_ascii=False)
@@ -1077,7 +1092,13 @@ def execute_coding_harness_stage(
         f"轨迹：\n{log_md}\n\n"
         f"## 运行验证\n\n{verify_md}\n\n"
         f"## 测试结果\n\n{tests_md}\n\n"
-        f"最终状态：{'通过' if result.ok else '未完全通过'}，共 {result.turn_count} 轮。"
+        + (
+            f"续跑：本次沿用上次中断的会话（起点第 {result.resumed_from_turn} 轮），"
+            "未重复通读工作区。\n\n"
+            if result.resumed_from_turn is not None
+            else ""
+        )
+        + f"最终状态：{'通过' if result.ok else '未完全通过'}，共 {result.turn_count} 轮。"
     )
 
     # 契约要求产出 TC 实体的阶段（V 模型三条验证通道）：把已落盘的
@@ -1131,6 +1152,10 @@ def execute_coding_harness_stage(
     except Exception:  # noqa: BLE001
         logger.exception("文档产物写文件失败")
     commit_stage_progress(db, project.id, stage.code, f"{role.name}工具循环与验证结果已生成")
+    # 工具循环阶段同样需要评审 Agent 建议：此前只有文档阶段会触发，
+    # 导致编码/测试阶段的评审清单没有 Agent 判定可参考。
+    if result.ok:
+        _suggest_review_for_run(run, stage, artifact, provider, db)
     publish(
         project.id,
         "artifact_saved",
@@ -1586,6 +1611,7 @@ def _suggest_review_for_run(
         suggestion = f"评审 Agent 执行失败：{exc}"
     if not suggestion:
         suggestion = "评审 Agent 未返回内容。"
+    agent_verdicts = parse_verdicts(stage.code, suggestion)
     db.add(
         Review(
             stage_run_id=run.id,
@@ -1593,6 +1619,9 @@ def _suggest_review_for_run(
             reviewer_type="agent",
             result="suggested",
             comment=suggestion,
+            checklist_json=(
+                json.dumps(agent_verdicts, ensure_ascii=False) if agent_verdicts else None
+            ),
         )
     )
     db.add(
@@ -1621,9 +1650,28 @@ def review_stage_run(
     db: Session,
     result: str,
     comment: str = "",
+    checklist: dict[str, dict[str, str]] | None = None,
 ) -> StageRun:
     if run.status not in ("awaiting_review", "verification_failed"):
         raise ValueError("当前阶段不在可评审状态")
+
+    # 门禁：清单里存在"不通过"项时不允许通过 —— 让检查项真正起作用，
+    # 而不是写给人看的装饰。未判定的项不阻断（人工可按需只填关键项）。
+    stage = db.get(Stage, run.stage_id)
+    stage_code = stage.code if stage is not None else ""
+    verdicts = checklist or {}
+    known_ids = set(item_ids(stage_code))
+    failed_items = [
+        item_id
+        for item_id, payload in verdicts.items()
+        if item_id in known_ids and (payload or {}).get("verdict") == "failed"
+    ]
+    if result == "approved" and failed_items:
+        raise ValueError(
+            "检查清单存在未通过项（"
+            + "、".join(failed_items)
+            + "），请先修改产物或把该项标记为不适用，再通过评审。"
+        )
     artifacts = list(
         db.scalars(
             select(Artifact)
@@ -1640,6 +1688,7 @@ def review_stage_run(
             reviewer_type="user",
             result=result,
             comment=comment,
+            checklist_json=json.dumps(verdicts, ensure_ascii=False) if verdicts else None,
         )
     )
     run.status = result
@@ -1649,7 +1698,10 @@ def review_stage_run(
             project_id=run.project_id,
             stage_run_id=run.id,
             event_type=f"review_{result}",
-            message=f"阶段评审{('通过' if result == 'approved' else '打回')}",
+            message=(
+                f"阶段评审{('通过' if result == 'approved' else '打回')}"
+                + (f"（{review_checklist.verdict_summary(verdicts)}）" if verdicts else "")
+            ),
         )
     )
     db.commit()

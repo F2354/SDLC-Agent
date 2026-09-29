@@ -451,18 +451,50 @@ export function listStageRunReviews(runId: number) {
   return request<Review[]>(`/stage-runs/${runId}/review`)
 }
 
-export function approveStageRun(runId: number, comment = '') {
+/** 评审清单：检查项 + 评审 Agent 的逐项建议。 */
+export interface ChecklistItem {
+  id: string
+  text: string
+  hint: string
+  verdict: string | null
+  note: string
+}
+
+export interface StageChecklist {
+  stage_code: string
+  items: ChecklistItem[]
+  agent: Record<string, { verdict: string; note: string }>
+}
+
+export interface ChecklistVerdict {
+  verdict: 'passed' | 'failed' | 'na'
+  note: string
+}
+
+export function approveStageRun(
+  runId: number,
+  comment = '',
+  checklist: Record<string, ChecklistVerdict> = {},
+) {
   return request<StageRun>(`/stage-runs/${runId}/approve`, {
     method: 'POST',
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify({ comment, checklist }),
   })
 }
 
-export function rejectStageRun(runId: number, comment = '') {
+export function rejectStageRun(
+  runId: number,
+  comment = '',
+  checklist: Record<string, ChecklistVerdict> = {},
+) {
   return request<StageRun>(`/stage-runs/${runId}/reject`, {
     method: 'POST',
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify({ comment, checklist }),
   })
+}
+
+export function getStageChecklist(runId: number) {
+  return request<StageChecklist>(`/stage-runs/${runId}/checklist`)
 }
 
 export function listActivityEvents(projectId: number) {

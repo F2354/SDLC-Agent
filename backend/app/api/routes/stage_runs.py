@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -5,16 +7,21 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, get_stage_run_or_404
 from app.db.session import get_db
 from app.models.project import Project
+from app.models.process_model import Stage
 from app.models.stage_run import Artifact, Message, Review, StageRun
 from app.models.user import User
 from app.schemas.stage import (
     ArtifactOut,
     ChatRequest,
+    ChecklistItemOut,
+    ChecklistVerdictIn,
     MessageOut,
     ReviewOut,
     ReviewRequest,
+    StageChecklistOut,
     StageRunOut,
 )
+from app.services.review_checklist import items_for
 from app.services.stage_service import (
     confirm_stage,
     review_stage_run,
@@ -147,7 +154,13 @@ def approve_stage_run(
 ):
     run = get_owned_stage_run(run_id, user, db)
     try:
-        run = review_stage_run(run, db, "approved", payload.comment)
+        run = review_stage_run(
+            run,
+            db,
+            "approved",
+            payload.comment,
+            {key: value.model_dump() for key, value in payload.checklist.items()},
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return serialize_stage_run(run, db)
@@ -162,7 +175,55 @@ def reject_stage_run(
 ):
     run = get_owned_stage_run(run_id, user, db)
     try:
-        run = review_stage_run(run, db, "rejected", payload.comment)
+        run = review_stage_run(
+            run,
+            db,
+            "rejected",
+            payload.comment,
+            {key: value.model_dump() for key, value in payload.checklist.items()},
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     return serialize_stage_run(run, db)
+
+@router.get("/{run_id}/checklist", response_model=StageChecklistOut)
+def stage_run_checklist(
+    run_id: int,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """返回该阶段运行的评审清单：检查项 + 评审 Agent 的逐项建议。
+
+    人工端据此逐项判定；判定结果随 approve/reject 一起提交。
+    """
+    run = get_owned_stage_run(run_id, user, db)
+    stage = db.get(Stage, run.stage_id)
+    stage_code = stage.code if stage is not None else ""
+    agent_verdicts: dict[str, dict[str, str]] = {}
+    latest_agent = db.scalar(
+        select(Review)
+        .where(Review.stage_run_id == run.id, Review.reviewer_type == "agent")
+        .order_by(Review.id.desc())
+    )
+    if latest_agent is not None and latest_agent.checklist_json:
+        try:
+            agent_verdicts = json.loads(latest_agent.checklist_json)
+        except (TypeError, ValueError):
+            agent_verdicts = {}
+    items = [
+        ChecklistItemOut(
+            id=item.id,
+            text=item.text,
+            hint=item.hint,
+            verdict=(agent_verdicts.get(item.id) or {}).get("verdict"),
+            note=(agent_verdicts.get(item.id) or {}).get("note", ""),
+        )
+        for item in items_for(stage_code)
+    ]
+    return StageChecklistOut(
+        stage_code=stage_code,
+        items=items,
+        agent={
+            key: ChecklistVerdictIn(**value) for key, value in agent_verdicts.items()
+        },
+    )

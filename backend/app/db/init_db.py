@@ -46,6 +46,10 @@ def _ensure_stage_run_columns() -> None:
             conn.exec_driver_sql(
                 "ALTER TABLE stage_runs ADD COLUMN context_json TEXT"
             )
+        if "harness_json" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE stage_runs ADD COLUMN harness_json TEXT"
+            )
 
 
 def _ensure_llm_call_log_columns() -> None:
@@ -70,10 +74,25 @@ def _ensure_llm_call_log_columns() -> None:
             )
 
 
+def _ensure_review_columns() -> None:
+    """为既有 SQLite 库补齐 reviews 的清单结论列。"""
+    with engine.begin() as conn:
+        columns = [
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(reviews)")
+        ]
+        if not columns:
+            return
+        if "checklist_json" not in columns:
+            conn.exec_driver_sql(
+                "ALTER TABLE reviews ADD COLUMN checklist_json TEXT"
+            )
+
+
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_project_columns()
     _ensure_stage_run_columns()
     _ensure_llm_call_log_columns()
+    _ensure_review_columns()
     with SessionLocal() as db:
         seed_all(db)
