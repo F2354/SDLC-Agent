@@ -177,7 +177,7 @@ SDLC-Agent/
 ├─ frontend/          React 工作台（Vite + Tailwind v4）
 ├─ desktop/           Electron 桌面壳与打包配置
 ├─ scripts/           开发与打包脚本（dev / build / package-portable）
-├─ docs/              设计文档与界面截图
+├─ docs/              界面截图
 └─ README.md
 ```
 
@@ -197,22 +197,3 @@ SDLC-Agent/
 - **MCP Server**：`<project>/.sdlc/mcp.json` 配置本地 stdio Server，按需发现工具（配置读取不执行命令）。
 - **Agent 配置**：`<project>/.sdlc/agents.json` 定义角色与 `read/edit/bash/git` 权限。
 - **Project Skills**：`<project>/.sdlc/skills/<name>/SKILL.md` 提供项目规则，仅作为上下文加载，不执行脚本。
-
-## 项目状态
-
-已完成 M0–M12：从项目骨架、Provider 管理、Agent 编排、评审闭环，到六种过程模型、
-阶段契约与子 Agent 分工、并行执行、Git 集成、上下文预算、模型调用台账与界面重做。
-后端测试覆盖 22 个文件、160+ 用例。
-
-详细设计见 [`docs/软件生命周期智能协作平台-详细设计.md`](docs/软件生命周期智能协作平台-详细设计.md)
-与 [`docs/实施计划.md`](docs/实施计划.md)。
-
-## 贡献
-
-欢迎提交 Issue 与 Pull Request，详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-参与本项目即表示同意遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
-
-## 许可证
-
-本项目当前**未附带开源许可证**。若希望他人可自由使用、修改与分发，建议添加一份
-LICENSE（如 MIT）。在添加之前，默认保留所有权利。

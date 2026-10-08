@@ -38,3 +38,6 @@ desktop/runtime/
 desktop/release/
 release/
 data/
+
+# 内部设计与案例文档（本地保留，不随仓库公开）
+docs/*.md
