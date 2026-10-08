@@ -26,7 +26,15 @@ export default function AppShell() {
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
+    localStorage.getItem('sdlc-theme') === 'dark' ? 'dark' : 'light',
+  )
   const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('sdlc-theme', theme)
+  }, [theme])
 
   const projectMatch = location.pathname.match(/^\/projects\/(\d+)/)
   const activeProjectId = projectMatch ? Number(projectMatch[1]) : null
@@ -81,6 +89,13 @@ export default function AppShell() {
           ))}
         </nav>
         <div className="ide-topbar-right">
+          <button
+            onClick={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
+            className="ide-theme-toggle"
+            title={theme === 'dark' ? '切换为浅色' : '切换为深色'}
+          >
+            {theme === 'dark' ? '☀' : '☾'}
+          </button>
           <span className="ide-connection"><i /> 本地工作区</span>
           <span className="ide-user">U</span>
         </div>

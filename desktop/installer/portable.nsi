@@ -13,7 +13,7 @@ RequestExecutionLevel user
 ShowInstDetails nevershow
 SetCompressor /SOLID lzma
 
-!define APP_VERSION "0.1.0"
+!define APP_VERSION "0.2.0"
 !define STAGE_DIR "${__FILEDIR__}\..\release\win-unpacked"
 
 Var TargetDir

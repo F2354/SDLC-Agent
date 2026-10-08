@@ -164,6 +164,16 @@ function flowStatusClass(status: string) {
   return 'is-pending'
 }
 
+/** 活动事件按类型映射到时间线节点的颜色语义。 */
+function agentStepClass(eventType: string): string {
+  const type = eventType.toLowerCase()
+  if (/error|fail/.test(type)) return 'is-error'
+  if (/review|await|warn|reject/.test(type)) return 'is-warn'
+  if (/completed|approved|saved|commit|done/.test(type)) return 'is-ok'
+  if (/start|tool|status|generat|collect|running|delta/.test(type)) return 'is-run'
+  return ''
+}
+
 type ProcessFlowProps = {
   flow: ProjectFlow
   startDisabled: boolean
@@ -1181,6 +1191,17 @@ export default function ProjectWorkspacePage() {
   const runningStages = teamStages.filter(({ status }) => status === 'collecting' || status === 'generating')
   const completedStages = teamStages.filter(({ status }) => status === 'approved' || status === 'completed')
 
+  // 运行日志：阶段名映射（用于时间线标注）+ 对话“思考过程”数据。
+  const runStageNames: Record<number, string> = {}
+  for (const item of teamStages) {
+    if (item.stage_run_id != null) runStageNames[item.stage_run_id] = item.stage.name
+  }
+  const chatRunTools = collectingRunId != null ? liveToolCalls[collectingRunId] ?? [] : []
+  const chatRunEvents =
+    collectingRunId != null
+      ? activityEvents.filter((event) => event.stage_run_id === collectingRunId).slice(-8)
+      : []
+
   return (
     <div className="page-container workspace-frame flex min-h-full min-h-0 flex-col">
       <div className="workspace-header flex shrink-0 flex-wrap items-center justify-between gap-4">
@@ -1437,6 +1458,40 @@ export default function ProjectWorkspacePage() {
               </span>
             </div>
           </header>
+
+          <details className="thinking-block">
+            <summary className="thinking-summary">
+              <span className="thinking-spark">✦</span>
+              <b>思考过程</b>
+              <span className="thinking-meta">
+                {chatRunTools.length > 0 ? `${chatRunTools.length} 项工具 · ` : ''}{chatRunEvents.length} 步
+              </span>
+              <span className="thinking-caret">▾</span>
+            </summary>
+            <div className="thinking-body">
+              {chatRunTools.length > 0 && (
+                <div className="thinking-tools">
+                  {chatRunTools.map((tool) => <span key={tool.tool}>{tool.tool} ×{tool.count}</span>)}
+                </div>
+              )}
+              {chatRunEvents.length === 0 ? (
+                <p className="thinking-empty">Agent 正在组织回复，暂无工具调用记录。</p>
+              ) : (
+                <div className="agent-timeline">
+                  {chatRunEvents.map((event) => (
+                    <div key={event.id} className={`agent-step ${agentStepClass(event.event_type)}`}>
+                      <span className="agent-step-dot" />
+                      <div className="agent-step-head">
+                        <span className="agent-step-type">{event.event_type}</span>
+                        <time className="agent-step-time">{renderTime(event.created_at)}</time>
+                      </div>
+                      <div className="agent-step-text">{event.message}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </details>
 
           <div
             className="chat-scroll"
@@ -1910,20 +1965,29 @@ export default function ProjectWorkspacePage() {
           </section>
 
           <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5">
-            <h2 className="font-medium">Agent 活动日志</h2>
-            <ul className="mt-3 max-h-72 space-y-2 overflow-auto text-sm">
-              {activityEvents.length === 0 && (
-                <li className="text-slate-500">暂无活动记录。</li>
-              )}
-              {activityEvents.map((event) => (
-                <li key={event.id} className="flex items-start gap-2 text-slate-600">
-                  <span className="shrink-0 text-xs text-slate-400">
-                    {renderTime(event.created_at)}
-                  </span>
-                  <span>{event.message}</span>
-                </li>
-              ))}
-            </ul>
+            <div className="flex items-center justify-between">
+              <h2 className="font-medium">Agent 活动时间线</h2>
+              <span className="text-[10px] text-slate-400">{activityEvents.length} 步</span>
+            </div>
+            {activityEvents.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-500">暂无活动记录。</p>
+            ) : (
+              <div className="agent-timeline max-h-96 overflow-auto">
+                {activityEvents.map((event) => (
+                  <div key={event.id} className={`agent-step ${agentStepClass(event.event_type)}`}>
+                    <span className="agent-step-dot" />
+                    <div className="agent-step-head">
+                      <span className="agent-step-type">{event.event_type}</span>
+                      {event.stage_run_id != null && runStageNames[event.stage_run_id] && (
+                        <span className="agent-step-stage">{runStageNames[event.stage_run_id]}</span>
+                      )}
+                      <time className="agent-step-time">{renderTime(event.created_at)}</time>
+                    </div>
+                    <div className="agent-step-text">{event.message}</div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}
