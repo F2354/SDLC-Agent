@@ -12,6 +12,9 @@ node_modules/
 dist/
 .vite/
 
+# 前端构建产物（由 scripts/build.ps1 拷贝到后端，供单端口托管/打包）
+backend/app/static/
+
 # 环境与数据
 .env
 backend/data/
@@ -28,3 +31,10 @@ Thumbs.db
 
 # 工具工作区（Agent 记忆等本地数据，不属于项目交付物）
 .workbuddy/
+
+# 桌面打包产物（Electron 壳的依赖、内置运行时与发布目录）
+desktop/node_modules/
+desktop/runtime/
+desktop/release/
+release/
+data/

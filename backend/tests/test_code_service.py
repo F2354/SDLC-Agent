@@ -177,3 +177,40 @@ def test_subprocess_env_keeps_windows_system_vars(client, project_folder):
     for key in ("SystemDrive", "SystemRoot", "COMSPEC", "TEMP"):
         if os.environ.get(key) is not None:
             assert env.get(key) == os.environ[key], f"子进程环境缺少 {key}"
+
+
+def test_git_degrades_when_unavailable(client, project_folder, monkeypatch):
+    """宿主机未安装 Git 时，Git 功能应降级为不可用，而不是抛错。"""
+    from app.services import code_service
+
+    monkeypatch.setattr(code_service, "git_available", lambda: False)
+
+    username = unique_name("git_missing")
+    reg = client.post("/api/auth/register", json={"username": username, "password": "secret123"})
+    headers = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    project = client.post(
+        "/api/projects",
+        headers=headers,
+        json={"name": "无 Git 项目", "process_model_code": "waterfall", "folder": project_folder},
+    )
+    project_id = project.json()["id"]
+
+    status = client.get(f"/api/projects/{project_id}/code/git/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["available"] is False
+    assert status.json()["is_repo"] is False
+
+    log = client.get(f"/api/projects/{project_id}/code/git/log", headers=headers)
+    assert log.status_code == 200
+    assert log.json() == []
+
+    diff = client.get(f"/api/projects/{project_id}/code/git/diff", headers=headers)
+    assert diff.status_code == 200
+    assert "未检测到 Git" in diff.text
+
+    init = client.post(f"/api/projects/{project_id}/code/git/init", headers=headers)
+    assert init.status_code == 400
+
+    # 阶段自动提交应静默跳过，不抛异常。
+    result = code_service.commit_project_changes(project_id, "msg")
+    assert result["created"] is False

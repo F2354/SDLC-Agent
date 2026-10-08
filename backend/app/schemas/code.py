@@ -23,6 +23,8 @@ class GitStatusOut(BaseModel):
     clean: bool
     changed_files: int
     files: list[str] = []
+    # 宿主机是否检测到 Git（桌面绿色版可能未安装，此时相关功能不可用）。
+    available: bool = True
 
 
 class CodeFileUpdate(BaseModel):

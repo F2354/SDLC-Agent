@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -409,6 +410,15 @@ def _repo_dir(project_id: int) -> Path | None:
     return root if marker.exists() else None
 
 
+def git_available() -> bool:
+    """检测宿主机是否安装了 Git。
+
+    桌面绿色版可能运行在未安装 Git 的机器上，此时 Git 相关功能不可用，
+    但不应影响其它流程。
+    """
+    return shutil.which("git") is not None
+
+
 def _git_run(project_id: int, args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
     root = _project_root(project_id)
     return subprocess.run(
@@ -460,6 +470,8 @@ def _ensure_gitignore(root: Path) -> None:
 
 
 def init_git_repo(project_id: int) -> dict:
+    if not git_available():
+        raise RuntimeError("未检测到 Git，请安装 Git 后重试")
     root = _project_root(project_id)
     root.mkdir(parents=True, exist_ok=True)
     _ensure_gitignore(root)
@@ -471,8 +483,17 @@ def init_git_repo(project_id: int) -> dict:
 
 
 def git_status(project_id: int) -> dict:
+    if not git_available():
+        return {
+            "is_repo": False,
+            "branch": "",
+            "clean": True,
+            "changed_files": 0,
+            "files": [],
+            "available": False,
+        }
     if _repo_dir(project_id) is None:
-        return {"is_repo": False, "branch": "", "clean": True, "changed_files": 0, "files": []}
+        return {"is_repo": False, "branch": "", "clean": True, "changed_files": 0, "files": [], "available": True}
     branch_result = _git_run(project_id, ["branch", "--show-current"])
     status_result = _git_run(project_id, ["status", "--porcelain=v1"])
     if status_result.returncode != 0:
@@ -485,10 +506,13 @@ def git_status(project_id: int) -> dict:
         "clean": not entries,
         "changed_files": len(entries),
         "files": files,
+        "available": True,
     }
 
 
 def git_diff(project_id: int) -> str:
+    if not git_available():
+        return "未检测到 Git，无法查看差异。"
     if _repo_dir(project_id) is None:
         return "未检测到 Git 仓库。"
     result = _git_run(project_id, ["diff", "--no-ext-diff", "--no-color"])
@@ -502,7 +526,7 @@ def git_diff(project_id: int) -> str:
 
 
 def git_log(project_id: int, limit: int = 12) -> list[dict[str, str]]:
-    if _repo_dir(project_id) is None:
+    if not git_available() or _repo_dir(project_id) is None:
         return []
     result = _git_run(project_id, ["log", f"-n{max(1, min(limit, 50))}", "--format=%h%x09%an%x09%ad%x09%s", "--date=short"])
     if result.returncode != 0:
@@ -518,6 +542,8 @@ def git_commit(project_id: int, message: str) -> dict:
     message = message.strip()
     if not message:
         raise ValueError("提交说明不能为空")
+    if not git_available():
+        raise RuntimeError("未检测到 Git，请安装 Git 后重试")
     if _repo_dir(project_id) is None:
         raise RuntimeError("请先初始化 Git 仓库")
     add_result = _git_run(project_id, ["add", "-A"])
@@ -539,6 +565,8 @@ def git_commit(project_id: int, message: str) -> dict:
 
 def ensure_git_repo(project_id: int) -> bool:
     """确保项目目录已初始化为 Git 仓库，返回本次是否新建。"""
+    if not git_available():
+        return False
     if _repo_dir(project_id) is not None:
         return False
     init_git_repo(project_id)
@@ -550,7 +578,10 @@ def commit_project_changes(project_id: int, message: str) -> dict:
 
     项目目录尚未初始化仓库时会先初始化，使阶段产物能自动沉淀为
     过程模型的执行轨迹，而不依赖用户手动点「初始化仓库」。
+    宿主机未安装 Git 时跳过提交（created=False），不影响其它流程。
     """
+    if not git_available():
+        return {"created": False, "commit": "", "message": "未检测到 Git，跳过提交"}
     ensure_git_repo(project_id)
     return git_commit(project_id, message)
 

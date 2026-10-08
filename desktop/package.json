@@ -1,0 +1,43 @@
+{
+  "name": "sdlc-agent-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SDLC Agent desktop shell (portable, Windows 10+)",
+  "main": "src/main.js",
+  "author": "SDLC Agent",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64 --dir"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.sdlcagent.desktop",
+    "productName": "SDLC Agent",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "runtime/python",
+        "to": "python"
+      },
+      {
+        "from": "runtime/backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "signAndEditExecutable": false
+    }
+  }
+}
