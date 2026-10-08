@@ -1,0 +1,21 @@
+# 统一换行与二进制识别，避免跨平台差异导致的噪声 diff。
+* text=auto
+
+# Windows 脚本保持 CRLF
+*.ps1 text eol=crlf
+
+# 二进制资源
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.7z binary
+*.exe binary
+
+# 锁文件视为生成物，减少 review 噪声
+package-lock.json linguist-generated=true
