@@ -425,6 +425,10 @@ def _git_run(project_id: int, args: list[str], timeout: int = 20) -> subprocess.
         ["git", "-C", str(root), *args],
         capture_output=True,
         text=True,
+        # 显式按 UTF-8 解码：Windows 中文环境下默认 GBK 会因 UTF-8 路径/内容报
+        # UnicodeDecodeError（中文分支名、中文产物文件名等）。
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         env=subprocess_env(project_id),
     )
