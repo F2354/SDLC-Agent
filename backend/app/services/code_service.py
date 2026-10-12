@@ -61,6 +61,8 @@ def _ensure_project_venv(project_id: int) -> Path:
             [sys.executable, "-m", "venv", str(venv_dir)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
             timeout=120,
         )
@@ -685,6 +687,8 @@ def run_verify(project_id: int) -> CodeRunOut:
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=300,
                 env=subprocess_env(project_id),
             )
@@ -705,6 +709,8 @@ def run_verify(project_id: int) -> CodeRunOut:
             [str(venv_python), "-m", "py_compile", str(py_file)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             env=subprocess_env(project_id),
         )
@@ -734,6 +740,8 @@ def run_verify(project_id: int) -> CodeRunOut:
                 command,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=10,
                 cwd=cwd,
                 env=subprocess_env(project_id),
@@ -821,6 +829,8 @@ def run_stage_tests(project_id: int, stage_code: str | None = None) -> CodeRunOu
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=300,
         env=subprocess_env(project_id),
     )
@@ -835,6 +845,8 @@ def run_stage_tests(project_id: int, stage_code: str | None = None) -> CodeRunOu
             [str(venv_python), "-m", "pytest", *test_dirs, "-q"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=90,
             cwd=str(code_root),
             env=subprocess_env(project_id, PYTHONPATH=str(code_root)),

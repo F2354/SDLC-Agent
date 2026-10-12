@@ -359,6 +359,8 @@ def _execute_command(project_id: int, command: str, timeout: int = 15) -> dict:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=str(code_root(project_id)),
             env=subprocess_env(project_id),
